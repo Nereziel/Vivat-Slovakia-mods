@@ -11,12 +11,14 @@ internal static class CollisionPartDamage
     private static Collision activeCollision;
 
     private static ManualLogSource log;
+    private static bool logPartDamage;
     private static float nextFilteredLog;
     private static float nextJointLog;
 
-    internal static void Install(Harmony harmony)
+    internal static void Install(Harmony harmony, bool enableDamageLogging)
     {
         log ??= BepInEx.Logging.Logger.CreateLogSource("Vivat Part Damage");
+        logPartDamage = enableDamageLogging;
         nextFilteredLog = 0f;
         nextJointLog = 0f;
 
@@ -24,9 +26,12 @@ internal static class CollisionPartDamage
         PatchScope(harmony, typeof(MeshDeform), "OnCollisionEnter", typeof(Collision));
         harmony.Patch(RequireMethod(typeof(DetachablePart), "OnHit", typeof(float)),
             prefix: Callback(nameof(FilterPartHit)));
-        harmony.Patch(RequireMethod(typeof(DetachablePart), "OnJointBreak", typeof(float)),
-            prefix: Callback(nameof(TraceJointBreak)));
-        log.LogInfo("Filtr poskozeni dilu zapnuty.");
+        if (logPartDamage)
+        {
+            harmony.Patch(RequireMethod(typeof(DetachablePart), "OnJointBreak", typeof(float)),
+                prefix: Callback(nameof(TraceJointBreak)));
+            log.LogInfo("Filtr poskozeni dilu zapnuty.");
+        }
     }
 
     private static void PatchScope(Harmony harmony, Type type, string name, params Type[] signature)
@@ -62,13 +67,16 @@ internal static class CollisionPartDamage
         if (!negligibleImpulse && !slowDeepOverlap)
             return true;
 
-        float now = Time.realtimeSinceStartup;
-        if (now >= nextFilteredLog)
+        if (logPartDamage)
         {
-            nextFilteredLog = now + 0.5f;
-            log.LogInfo($"Preskoceno poskozeni dilu {__instance.name}: " +
+            float now = Time.realtimeSinceStartup;
+            if (now >= nextFilteredLog)
+            {
+                nextFilteredLog = now + 0.5f;
+                log.LogInfo($"Preskoceno poskozeni dilu {__instance.name}: " +
                         $"v={MathF.Sqrt(speedSquared):F2} m/s, J={MathF.Sqrt(impulseSquared):F1} N*s, " +
-                        $"OnHit={__0:F1}, duvod={(negligibleImpulse ? "zanedbatelny impuls" : "pomaly hluboky prunik")}.");
+                            $"OnHit={__0:F1}, duvod={(negligibleImpulse ? "zanedbatelny impuls" : "pomaly hluboky prunik")}.");
+            }
         }
         return false;
     }
