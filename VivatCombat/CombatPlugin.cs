@@ -17,7 +17,7 @@ using Object = UnityEngine.Object;
 
 namespace VivatPopulationMod;
 
-[BepInPlugin("local.vivat.combat", "Vivat Combat", "0.1.32")]
+[BepInPlugin("local.vivat.combat", "Vivat Combat", "0.1.33")]
 public sealed class CombatPlugin : BasePlugin
 {
     private Harmony markers;
@@ -127,7 +127,7 @@ public sealed class CombatPlugin : BasePlugin
     public override void Load()
     {
         log = Log;
-        Log.LogInfo("Police dispatch build: 0.1.32 (NavMesh crew spawn, guarded exits, patrol-only replacement).");
+        Log.LogInfo("Police dispatch build: 0.1.33 (NavMesh agent guard, corrected crew spawn, guarded exits).");
         bool customPoliceEnabled = Config.Bind("Police", "CustomLogicEnabled", true,
             "Zapne vlastní logiku policejních posil, dopravy, výzbroje a navigace. Po změně restartuj hru.").Value;
         bool transportReinforcements = Config.Bind("Police", "TransportReinforcements", true,
@@ -957,9 +957,17 @@ public sealed class CombatPlugin : BasePlugin
         reservedPoliceSpawner = null;
     }
 
+    // An invalid NavMeshAgent.CalculatePath call can come from the game's
+    // civilian AI as well as from a police prefab. Guard ALL invalid agents;
+    // keep native CalculatePath untouched when the agent is usable.
     private static bool CalculatePolicePath(NavMeshAgent __instance, Vector3 __0, NavMeshPath __1, ref bool __result)
     {
         if (__instance.isActiveAndEnabled && __instance.isOnNavMesh)
+            return true;
+
+        var officer = __instance.GetComponentInParent<CharacterControllerBase>();
+        if (officer != null && !officer.IsPlayer && !officer.IsDead && !officer.IsInCar &&
+            officer.Faction == Faction.Police && TryRecoverPoliceFootAgent(__instance, officer))
             return true;
 
         var patrol = __instance.GetComponentInParent<PoliceCar>();
@@ -969,28 +977,17 @@ public sealed class CombatPlugin : BasePlugin
             patrol = car != null ? car.PoliceCar : null;
         }
 
-        if (patrol == null || patrol.agent != __instance)
-        {
-            // A newly spawned police foot agent may have been disabled or
-            // detached from the NavMesh during a vehicle/exit transition.
-            // Never let the native CalculatePath log an engine error for it.
-            var officer = __instance.GetComponentInParent<CharacterControllerBase>();
-            if (officer == null || officer.IsPlayer || officer.Faction != Faction.Police)
-                return true;
-            __1?.ClearCorners();
-            __result = false;
-            return false;
-        }
-
-        var filter = new NavMeshQueryFilter
-        {
-            agentTypeID = __instance.agentTypeID,
-            areaMask = __instance.areaMask
-        };
         __result = false;
-        if (__1 != null)
+        __1?.ClearCorners();
+        if (patrol != null && patrol.agent == __instance && __1 != null)
         {
-            __1.ClearCorners();
+            // A police car may still use the static NavMesh query when its
+            // own agent has not been attached to the NavMesh yet.
+            var filter = new NavMeshQueryFilter
+            {
+                agentTypeID = __instance.agentTypeID,
+                areaMask = __instance.areaMask
+            };
             if (NavMesh.SamplePosition(__instance.transform.position, out NavMeshHit start, 6f, filter))
                 __result = NavMesh.CalculatePath(start.position, __0, filter, __1);
         }
@@ -999,12 +996,35 @@ public sealed class CombatPlugin : BasePlugin
         if (now >= nextPoliceNavigationReport)
         {
             nextPoliceNavigationReport = now + 5f;
-            log.LogInfo(__result
-                ? "Policejní posily: trasa auta spočtena z nejbližšího bodu na NavMeshi."
-                : "Policejní posily: pro auto mimo NavMesh se nepodařilo spočítat trasu.");
+            log.LogWarning($"NavMesh: neplatná žádost o trasu, agent={__instance.name}, " +
+                $"NPC={(officer != null ? officer.name : "nezjištěno")}, " +
+                $"policejní auto={(patrol != null)}, aktivní={__instance.isActiveAndEnabled}, " +
+                $"na síti={__instance.isOnNavMesh}, statická trasa={__result}.");
         }
-
         return false;
+    }
+
+    private static bool TryRecoverPoliceFootAgent(NavMeshAgent agent, CharacterControllerBase officer)
+    {
+        if (agent == null || !agent.isActiveAndEnabled)
+            return false;
+        if (agent.isOnNavMesh)
+            return true;
+        if (officer == null || officer.IsDead || officer.IsInCar ||
+            officer.StateMachine?.ActiveStateType == CharacterStateType.ExitCar)
+            return false;
+
+        var filter = new NavMeshQueryFilter
+        {
+            agentTypeID = agent.agentTypeID,
+            areaMask = agent.areaMask
+        };
+        Vector3 position = agent.transform.position;
+        // Only a small, nearly level correction is allowed here; do not
+        // teleport NPCs across buildings or floors to a different NavMesh.
+        return NavMesh.SamplePosition(position, out NavMeshHit hit, 2.5f, filter) &&
+            Mathf.Abs(hit.position.y - position.y) <= 0.8f &&
+            agent.Warp(hit.position) && agent.isOnNavMesh;
     }
 
     private static bool PreparePoliceFootPath(CharacterAgentMovement __instance)
@@ -1014,51 +1034,44 @@ public sealed class CombatPlugin : BasePlugin
             return true;
 
         var agent = __instance.agent;
-        if (officer.IsDead || officer.IsInCar || agent == null || !agent.isActiveAndEnabled)
+        if (officer.IsDead || officer.IsInCar || agent == null)
             return false;
-
-        if (agent.isOnNavMesh)
+        if (TryRecoverPoliceFootAgent(agent, officer))
             return true;
-
-        var filter = new NavMeshQueryFilter
-        {
-            agentTypeID = agent.agentTypeID,
-            areaMask = agent.areaMask
-        };
-        var position = agent.transform.position;
-        bool recovered = NavMesh.SamplePosition(position, out NavMeshHit hit, 2f, filter) &&
-            Mathf.Abs(hit.position.y - position.y) <= 0.8f &&
-            agent.Warp(hit.position) && agent.isOnNavMesh;
 
         float now = Time.unscaledTime;
         if (now >= nextPoliceFootNavigationReport)
         {
             nextPoliceFootNavigationReport = now + 5f;
-            log.LogInfo(recovered
-                ? "Policejní posily: pěší agent připojen k NavMeshi."
-                : "Policejní posily: výpočet pěší trasy odložen, agent je mimo NavMesh.");
+            log.LogWarning($"Policejní posily: trasa pěšího policisty {officer.name} odložena, " +
+                $"agent aktivní={agent.isActiveAndEnabled}, na síti={agent.isOnNavMesh}.");
         }
-
-        return recovered;
+        return false;
     }
 
-    private static bool TryFindOfficerSpawnPosition(CharacterControllerBase prefab, Vector3 origin, out Vector3 spawn)
+    private static bool TryFindOfficerSpawnPosition(CharacterControllerBase prefab, Vector3 origin,
+        Quaternion rotation, out Vector3 spawn)
     {
         spawn = origin;
         var agent = prefab.GetComponentInChildren<NavMeshAgent>(true);
         if (agent == null)
             return true;
 
+        // The NavMeshAgent is not always located at the prefab root. Sampling
+        // the root at a walkable position can leave a CHILD agent off-mesh.
+        Vector3 childOffset = prefab.transform.InverseTransformPoint(agent.transform.position);
+        Vector3 rotatedOffset = rotation * Vector3.Scale(childOffset, prefab.transform.lossyScale);
+        Vector3 expectedAgentPosition = origin + rotatedOffset;
         var filter = new NavMeshQueryFilter
         {
             agentTypeID = agent.agentTypeID,
             areaMask = agent.areaMask
         };
-        if (!NavMesh.SamplePosition(origin, out NavMeshHit hit, 8f, filter) ||
-            Mathf.Abs(origin.y - hit.position.y) > 2f)
+        if (!NavMesh.SamplePosition(expectedAgentPosition, out NavMeshHit hit, 8f, filter) ||
+            Mathf.Abs(expectedAgentPosition.y - hit.position.y) > 2f)
             return false;
 
-        spawn = hit.position;
+        spawn = hit.position - rotatedOffset;
         return true;
     }
 
@@ -1104,7 +1117,7 @@ public sealed class CombatPlugin : BasePlugin
             if (prefab == null)
                 continue;
 
-            if (!TryFindOfficerSpawnPosition(prefab, car.transform.position, out Vector3 spawnPosition))
+            if (!TryFindOfficerSpawnPosition(prefab, car.transform.position, car.transform.rotation, out Vector3 spawnPosition))
             {
                 PoliceCrewRetryAt[id] = Time.unscaledTime + 10f;
                 log.LogWarning($"Policejní posily: posádka #{id} čeká na pěší NavMesh v okolí auta; další pokus za 10 s.");
