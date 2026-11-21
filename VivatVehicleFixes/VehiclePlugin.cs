@@ -17,6 +17,7 @@ public sealed class VehiclePlugin : BasePlugin
 {
     private const string PluginId = "local.vivat.vehiclefixes";
     private static ManualLogSource patchLog;
+    private static bool verboseLogging;
     private static int detachedReported;
     private static int sensorReported;
     private static float sensorMultiplier;
@@ -51,6 +52,10 @@ public sealed class VehiclePlugin : BasePlugin
     public override void Load()
     {
         patchLog = Log;
+        verboseLogging = Config.Bind("Diagnostics", "VerboseLogging", false,
+            "Podrobne informacni vypisy. Chyby a varovani zustavaji zapnute. Restart hry.").Value;
+        bool logPartDamage = Config.Bind("Diagnostics", "LogPartDamage", false,
+            "Loguje preskocene poskozeni a prasknuti kloubu dilu. Filtr poskozeni zustava aktivni. Restart hry.").Value;
         detachedReported = 0;
         sensorReported = 0;
         nextCollisionTrace = 0f;
@@ -105,7 +110,7 @@ public sealed class VehiclePlugin : BasePlugin
         if (Config.Bind("Collision", "FilterSpuriousPartDamage", true,
                 "Omezi poskozeni dilu po kontaktech bez impulsu a po pomalem hlubokem pruniku.").Value)
         {
-            partDamagePatch = Install("part-damage", CollisionPartDamage.Install);
+            partDamagePatch = Install("part-damage", harmony => CollisionPartDamage.Install(harmony, logPartDamage));
         }
         if (Config.Bind("Collision", "IgnoreDetachedPartReports", true,
                 "Oddeleny dil nehlasi vlastni naraz puvodnimu autu.").Value)
@@ -130,7 +135,7 @@ public sealed class VehiclePlugin : BasePlugin
                 nameof(AdjustSensorInterval), prefix: false));
         }
 
-        if (Config.Bind("Collision", "TracePlayerContacts", true,
+        if (Config.Bind("Collision", "TracePlayerContacts", false,
                 "Loguje kontakty hracova auta pro diagnostiku neviditelnych kolizi.").Value)
         {
             tracePatch = Install("trace", harmony => Patch(harmony,
@@ -186,7 +191,7 @@ public sealed class VehiclePlugin : BasePlugin
         if (Config.Bind("Traffic", "ImpatientDrivers", true,
                 "Po 5 sekundach stani zkusi NPC popojet nebo pomalu objet nehybne auto, pokud ma volno. Zmena po restartu.").Value)
         {
-            impatientTrafficPatch = Install("impatient-traffic", harmony => ImpatientTraffic.Install(harmony, Log));
+            impatientTrafficPatch = Install("impatient-traffic", harmony => ImpatientTraffic.Install(harmony, Log, verboseLogging));
         }
 
         if (Config.Bind("Collision", "WantedOnHardPoliceCrash", true,
@@ -233,7 +238,8 @@ public sealed class VehiclePlugin : BasePlugin
 
                 group.SetLODs(lods);
                 if (Interlocked.Exchange(ref vehicleDetailReported, 1) == 0)
-                    patchLog?.LogInfo($"Dosah LOD aut ×{vehicleDetailMultiplier:F2}: {group.name}.");
+                    if (verboseLogging)
+                        patchLog?.LogInfo($"Dosah LOD aut ×{vehicleDetailMultiplier:F2}: {group.name}.");
             }
         }
         catch (Exception exception)
@@ -264,7 +270,8 @@ public sealed class VehiclePlugin : BasePlugin
             __state = edges;
             __instance.mipLevelEdges = scaled;
             if (Interlocked.Exchange(ref decalMipReported, 1) == 0)
-                patchLog?.LogInfo($"HDRP decal mip: prahy ×{decalMipMultiplier:F2}, {edges.Length} hodnot.");
+                if (verboseLogging)
+                    patchLog?.LogInfo($"HDRP decal mip: prahy ×{decalMipMultiplier:F2}, {edges.Length} hodnot.");
         }
         catch (Exception exception)
         {
@@ -288,7 +295,8 @@ public sealed class VehiclePlugin : BasePlugin
         int original = __result;
         __result = decalDistance;
         if (Interlocked.Exchange(ref decalDistanceReported, 1) == 0)
-            patchLog?.LogInfo($"HDRP dosah decalů při vykreslení: {original} -> {__result} m.");
+            if (verboseLogging)
+                patchLog?.LogInfo($"HDRP dosah decalů při vykreslení: {original} -> {__result} m.");
     }
 
     private float ReadVisibilityMultiplier(string name, float defaultValue, string description) =>
@@ -322,7 +330,8 @@ public sealed class VehiclePlugin : BasePlugin
             harmony.Patch(target, prefix: patch);
         else
             harmony.Patch(target, postfix: patch);
-        Log.LogInfo($"Harmony: {target.DeclaringType?.Name}.{target.Name}");
+        if (verboseLogging)
+            Log.LogInfo($"Harmony: {target.DeclaringType?.Name}.{target.Name}");
     }
 
     private static bool ReportAttachedPartOnly(NotifyCarParentOnCollision __instance) =>
@@ -341,7 +350,8 @@ public sealed class VehiclePlugin : BasePlugin
             return false;
 
         if (Interlocked.Exchange(ref detachedReported, 1) == 0)
-            patchLog?.LogInfo("Kolize oddeleneho dilu se nepredala jeho puvodnimu autu.");
+            if (verboseLogging)
+                patchLog?.LogInfo("Kolize oddeleneho dilu se nepredala jeho puvodnimu autu.");
         return true;
     }
 
@@ -353,7 +363,8 @@ public sealed class VehiclePlugin : BasePlugin
         float original = __result;
         __result *= sensorMultiplier;
         if (Interlocked.Exchange(ref sensorReported, 1) == 0)
-            patchLog?.LogInfo($"Interval senzoru aut: {original:F3} -> {__result:F3}");
+            if (verboseLogging)
+                patchLog?.LogInfo($"Interval senzoru aut: {original:F3} -> {__result:F3}");
     }
 
     private static void AdjustAssetCleanupInterval(SceneLoader __instance)
@@ -367,7 +378,8 @@ public sealed class VehiclePlugin : BasePlugin
             return;
 
         __instance.unloadUnusedAssetsInterval = adjusted;
-        patchLog?.LogInfo($"Interval uklidu nepouzitych assetu: {current:F1} -> {adjusted:F1} s.");
+        if (verboseLogging)
+            patchLog?.LogInfo($"Interval uklidu nepouzitych assetu: {current:F1} -> {adjusted:F1} s.");
     }
 
     private static void AdjustDetail(float __0)
@@ -380,7 +392,8 @@ public sealed class VehiclePlugin : BasePlugin
             return;
 
         QualitySettings.lodBias = adjusted;
-        patchLog?.LogInfo($"Unity LOD bias: {__0:F2} -> {adjusted:F2}.");
+        if (verboseLogging)
+            patchLog?.LogInfo($"Unity LOD bias: {__0:F2} -> {adjusted:F2}.");
     }
 
     private static void AdjustCarRange(ref float __result) =>
@@ -401,7 +414,8 @@ public sealed class VehiclePlugin : BasePlugin
         if (!reported)
         {
             reported = true;
-            patchLog?.LogInfo($"{name}: dosah spawneru {distance:F1} -> {adjusted:F1} m.");
+            if (verboseLogging)
+                patchLog?.LogInfo($"{name}: dosah spawneru {distance:F1} -> {adjusted:F1} m.");
         }
         distance = adjusted;
     }
@@ -422,7 +436,8 @@ public sealed class VehiclePlugin : BasePlugin
         if (!trafficSpeedReported)
         {
             trafficSpeedReported = true;
-            patchLog?.LogInfo($"Cilova rychlost bezne dopravy: {original:F2} -> {__result:F2}.");
+            if (verboseLogging)
+                patchLog?.LogInfo($"Cilova rychlost bezne dopravy: {original:F2} -> {__result:F2}.");
         }
     }
 
@@ -445,7 +460,8 @@ public sealed class VehiclePlugin : BasePlugin
             return;
 
         WantedSystem.AddWantedLevel();
-        patchLog?.LogInfo("Silný náraz hráče do policejního vozu předán systému hledanosti.");
+        if (verboseLogging)
+            patchLog?.LogInfo("Silný náraz hráče do policejního vozu předán systému hledanosti.");
     }
 
     private static void TracePlayerContact(CarController __instance, Collision __0, bool __1)
