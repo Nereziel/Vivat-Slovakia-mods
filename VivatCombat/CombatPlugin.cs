@@ -484,6 +484,15 @@ public sealed class CombatPlugin : BasePlugin
             nextPoliceDispatchDebug = Time.unscaledTime + 5f;
 
         int nearbyPatrols = 0;
+        int activeTransports = 0;
+        foreach (var existing in PoliceTransports.Values)
+        {
+            var transportCar = existing.Vehicle;
+            if (transportCar != null && transportCar.gameObject.activeInHierarchy &&
+                transportCar.PoliceCar != null && transportCar.PoliceCar.IsActive &&
+                (transportCar.transform.position - playerPosition).sqrMagnitude <= 130f * 130f)
+                activeTransports++;
+        }
         EmptyCarsThisScan.Clear();
         foreach (var vehicle in Object.FindObjectsByType<CarController>(FindObjectsSortMode.None))
         {
@@ -544,9 +553,16 @@ public sealed class CombatPlugin : BasePlugin
             if (patrol != null && patrol.IsActive && (!stalled || stoppingForCrew))
                 nearbyPatrols++;
 
-            if (patrol != null && patrol.IsActive && distance >= 32f * 32f &&
-                (PoliceTransports.Count < targetPatrols || PoliceTransports.ContainsKey(patrol.GetInstanceID())))
-                AssemblePoliceCrew(wanted.waveSpawner, patrol);
+            if (patrol != null && patrol.IsActive && distance >= 32f * 32f)
+            {
+                bool tracked = PoliceTransports.ContainsKey(patrol.GetInstanceID());
+                if (tracked || activeTransports < targetPatrols)
+                {
+                    AssemblePoliceCrew(wanted.waveSpawner, patrol);
+                    if (!tracked && PoliceTransports.ContainsKey(patrol.GetInstanceID()))
+                        activeTransports++;
+                }
+            }
         }
 
         if (reportDebug)
@@ -558,9 +574,9 @@ public sealed class CombatPlugin : BasePlugin
 
         if (policeBalanceEnabled)
         {
-            bool noUsableCars = nearbyPatrols == 0 && wantedDuration >= 15f;
-            bool needsFootFallback = noUsableCars &&
-                CountNearbyPoliceOnFoot(playerPosition) < policeFootFallbackLimit;
+            // Keep the wave cap in place while cars are unavailable. Lowering it
+            // after the first foot officers arrive can interfere with their lifecycle.
+            bool needsFootFallback = nearbyPatrols == 0 && wantedDuration >= 15f;
             SetPoliceFootFallback(wanted.waveSpawner, needsFootFallback ? policeFootFallbackLimit : 0);
         }
 
@@ -579,19 +595,6 @@ public sealed class CombatPlugin : BasePlugin
             reportedMissingPoliceSpawner = true;
             log.LogWarning("Policejní posily: původní spawner policejních aut není v této scéně dostupný.");
         }
-    }
-
-    private static int CountNearbyPoliceOnFoot(Vector3 playerPosition)
-    {
-        int count = 0;
-        foreach (var officer in Object.FindObjectsByType<CharacterControllerBase>(FindObjectsSortMode.None))
-        {
-            if (officer != null && !officer.IsPlayer && !officer.IsDead && !officer.IsInCar &&
-                officer.Faction == Faction.Police && officer.gameObject.activeInHierarchy &&
-                (officer.transform.position - playerPosition).sqrMagnitude <= 130f * 130f)
-                count++;
-        }
-        return count;
     }
 
     private static void ReinforceEmptyPatrol(Spawner spawner, Vector3 playerPosition, int nearbyPatrols, int targetPatrols)
@@ -1017,7 +1020,8 @@ public sealed class CombatPlugin : BasePlugin
 
         int id = patrol.GetInstanceID();
         bool alreadyTracked = PoliceTransports.TryGetValue(id, out var crew);
-        if (AssembledPoliceCars.Contains(id) || alreadyTracked)
+        if (AssembledPoliceCars.Contains(id) ||
+            (alreadyTracked && (crew.BrakingForDropOff || crew.ExitInProgress)))
             return;
 
         bool later = Time.unscaledTime - policeWantedSince >= 60f;
@@ -1053,8 +1057,11 @@ public sealed class CombatPlugin : BasePlugin
         if (!alreadyTracked && crew.Officers.Count > 0)
             PoliceTransports.Add(id, crew);
 
-        AssembledPoliceCars.Add(id);
-        log.LogInfo($"Policejní posily: auto #{id}, plánovaná posádka {1 + crew.Officers.Count}/{count} včetně řidiče.");
+        if (crew.Officers.Count > 0)
+        {
+            AssembledPoliceCars.Add(id);
+            log.LogInfo($"Policejní posily: auto #{id}, plánovaná posádka {1 + crew.Officers.Count}/{count} včetně řidiče.");
+        }
     }
 
     private static readonly List<(PoliceCar Patrol, CarInteract Car, CarSeatType Seat, CharacterControllerBase Officer,
@@ -1095,6 +1102,8 @@ public sealed class CombatPlugin : BasePlugin
                 log.LogWarning($"Policejní posily: usazení {entry.Seat}: {error.Message}");
             }
             entry.Crew.Officers.Remove(officer);
+            if (entry.Patrol != null)
+                AssembledPoliceCars.Remove(entry.Patrol.GetInstanceID());
             if (officer.IsInCar && entry.Car != null)
                 entry.Car.ExitCarInstant(officer);
             Object.Destroy(officer.gameObject);
