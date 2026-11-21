@@ -12,7 +12,7 @@ using Vivat.Systems.WantedSystem;
 
 namespace VivatPopulationMod;
 
-[BepInPlugin(PluginId, "Vivat Vehicle Fixes", "0.1.13")]
+[BepInPlugin(PluginId, "Vivat Vehicle Fixes", "0.1.14")]
 public sealed class VehiclePlugin : BasePlugin
 {
     private const string PluginId = "local.vivat.vehiclefixes";
@@ -428,7 +428,7 @@ public sealed class VehiclePlugin : BasePlugin
             return;
 
         var car = __instance.carController;
-        if (car == null || car.IsPlayer)
+        if (car == null || car.IsPlayer || car.isPolice || car.PoliceCar != null)
             return;
 
         float original = __result;
