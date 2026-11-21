@@ -127,6 +127,7 @@ public sealed class CombatPlugin : BasePlugin
     public override void Load()
     {
         log = Log;
+        Log.LogInfo("Police dispatch build: 0.1.32 (NavMesh crew spawn, guarded exits, patrol-only replacement).");
         bool customPoliceEnabled = Config.Bind("Police", "CustomLogicEnabled", true,
             "Zapne vlastní logiku policejních posil, dopravy, výzbroje a navigace. Po změně restartuj hru.").Value;
         bool transportReinforcements = Config.Bind("Police", "TransportReinforcements", true,
@@ -523,7 +524,14 @@ public sealed class CombatPlugin : BasePlugin
             if (reportDebug)
                 ReportPoliceVehicle(vehicle, patrol, Mathf.Sqrt(distance));
 
-            if (nativePoliceVehicle && patrol != null &&
+            // A police-looking traffic car without the PoliceCar component is not
+            // a dispatchable patrol. In particular, wrecks that have already gone
+            // through DriverDeath/Despawn may remain visible for some time.
+            // Do not include these objects in crew or empty-patrol replacement.
+            if (patrol == null)
+                continue;
+
+            if (nativePoliceVehicle &&
                 ReplaceStalledPatrol(vehicle, patrol, spawner, wanted.waveSpawner, player))
                 continue;
 
@@ -549,7 +557,10 @@ public sealed class CombatPlugin : BasePlugin
                     }
             if ((driver == null || driver.IsDead) && !livePassenger)
             {
-                EmptyCarsThisScan.Add(vehicle.GetInstanceID());
+                // Only replace actual native police spawner patrols. Other police
+                // cars can be wrecks, mission vehicles or ordinary traffic.
+                if (nativePoliceVehicle)
+                    EmptyCarsThisScan.Add(vehicle.GetInstanceID());
                 continue;
             }
             if (driver == null || driver.IsDead || driver.Faction != Faction.Police)
