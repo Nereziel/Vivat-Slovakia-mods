@@ -26,11 +26,13 @@ internal static class ImpatientTraffic
     private static readonly Dictionary<int, Stop> Stops = new();
     private static ManualLogSource log;
     private static bool failed;
+    private static bool verboseLogging;
     private static float nextDecisionLog;
 
-    public static void Install(Harmony harmony, ManualLogSource logger)
+    public static void Install(Harmony harmony, ManualLogSource logger, bool enableVerboseLogging)
     {
         log = logger;
+        verboseLogging = enableVerboseLogging;
         failed = false;
         nextDecisionLog = 0f;
         harmony.Patch(AccessTools.DeclaredMethod(typeof(DriverAI), "FixedTick"),
@@ -121,7 +123,8 @@ internal static class ImpatientTraffic
                 return Skip(car, reason);
 
             stop.Deadline = now + 12f;
-            log?.LogInfo($"Impatient traffic: car {car.ID} attempting {(stop.Route.Length == 1 ? "restart" : "bypass")}.");
+            if (verboseLogging)
+                log?.LogInfo($"Impatient traffic: car {car.ID} attempting {(stop.Route.Length == 1 ? "restart" : "bypass")}.");
         }
 
         if (now >= stop.Deadline)
@@ -150,7 +153,7 @@ internal static class ImpatientTraffic
 
     private static bool Skip(CarController car, string reason)
     {
-        if (Time.time >= nextDecisionLog)
+        if (verboseLogging && Time.time >= nextDecisionLog)
         {
             nextDecisionLog = Time.time + 5f;
             log?.LogDebug($"Impatient traffic: car {car.ID} waiting ({reason}).");
