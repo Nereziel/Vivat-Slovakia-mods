@@ -135,8 +135,9 @@ public sealed class VehiclePlugin : BasePlugin
                 nameof(AdjustSensorInterval), prefix: false));
         }
 
-        if (Config.Bind("Collision", "TracePlayerContacts", false,
-                "Loguje kontakty hracova auta pro diagnostiku neviditelnych kolizi.").Value)
+        bool tracePlayerContacts = Config.Bind("Collision", "TracePlayerContacts", false,
+            "Loguje kontakty hracova auta jen pri zapnutem Diagnostics.VerboseLogging.").Value;
+        if (verboseLogging && tracePlayerContacts)
         {
             tracePatch = Install("trace", harmony => Patch(harmony,
                 AccessTools.DeclaredMethod(typeof(CarController), "OnCollision",
