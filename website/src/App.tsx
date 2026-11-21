@@ -260,8 +260,8 @@ function Downloads({ catalog, status, error }: { catalog: ReleaseCatalog | null;
         {status === 'ready' && catalog?.all && (
           <Reveal className="all-download">
             <div className="all-download-icon"><FileArchive size={29} strokeWidth={1.6} /></div>
-            <div className="all-download-copy"><span>SPOLEČNÝ ARCHIV</span><h3>Všechny mody v jednom ZIPu.</h3><p>Soubor <code>vsechny.zip</code> z GitHub Releases. DLL z archivu patří do <code>BepInEx/plugins/</code>. Před instalací odstraň starší verze.</p></div>
-            <External href={catalog.all.downloadUrl} className="btn btn-white">Stáhnout všechny mody <ArrowDownToLine size={18} /></External>
+            <div className="all-download-copy"><span>SPOLEČNÝ ARCHIV</span><h3>Společný balíček modů.</h3><p>Soubor <code>vsechny.zip</code> z GitHub Releases. DLL z archivu patří do <code>BepInEx/plugins/</code>. Před instalací odstraň starší verze.</p></div>
+            <External href={catalog.all.downloadUrl} className="btn btn-white">Stáhnout společný ZIP <ArrowDownToLine size={18} /></External>
           </Reveal>
         )}
         {status === 'error' && (
