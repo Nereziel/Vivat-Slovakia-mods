@@ -96,6 +96,7 @@ public sealed class CombatPlugin : BasePlugin
     private static float nextPoliceNavigationReport;
     private static float nextPoliceFootNavigationReport;
     private static readonly HashSet<int> AssembledPoliceCars = new();
+    private static readonly Dictionary<int, float> PoliceCrewRetryAt = new();
     private static readonly Dictionary<int, PoliceTransport> PoliceTransports = new();
     private static readonly CarSeatType[] PolicePassengerSeats =
         { CarSeatType.FrontRight, CarSeatType.BackLeft, CarSeatType.BackRight };
@@ -440,6 +441,17 @@ public sealed class CombatPlugin : BasePlugin
             nextPoliceDispatchDebug = 0f;
             foreach (var crew in PoliceTransports.Values)
                 ReleaseDropOffBrake(crew);
+            // End every outstanding transition before a new wanted episode.
+            // Unseated prefab instances do not belong to the game spawner yet.
+            foreach (var entry in PendingSeats)
+            {
+                if (entry.Officer != null && !entry.Officer.IsInCar)
+                    Object.Destroy(entry.Officer.gameObject);
+            }
+            PendingSeats.Clear();
+            PendingExits.Clear();
+            PoliceTransports.Clear();
+            PoliceCrewRetryAt.Clear();
             PoliceProgress.Clear();
             PatrolApproaches.Clear();
             replacementSpawner = null;
@@ -1009,6 +1021,26 @@ public sealed class CombatPlugin : BasePlugin
         return recovered;
     }
 
+    private static bool TryFindOfficerSpawnPosition(CharacterControllerBase prefab, Vector3 origin, out Vector3 spawn)
+    {
+        spawn = origin;
+        var agent = prefab.GetComponentInChildren<NavMeshAgent>(true);
+        if (agent == null)
+            return true;
+
+        var filter = new NavMeshQueryFilter
+        {
+            agentTypeID = agent.agentTypeID,
+            areaMask = agent.areaMask
+        };
+        if (!NavMesh.SamplePosition(origin, out NavMeshHit hit, 8f, filter) ||
+            Mathf.Abs(origin.y - hit.position.y) > 2f)
+            return false;
+
+        spawn = hit.position;
+        return true;
+    }
+
     private static void AssemblePoliceCrew(WaveSpawner wave, PoliceCar patrol)
     {
         var car = patrol.carController.CarInteract;
@@ -1019,6 +1051,8 @@ public sealed class CombatPlugin : BasePlugin
             return;
 
         int id = patrol.GetInstanceID();
+        if (PoliceCrewRetryAt.TryGetValue(id, out var retryAt) && Time.unscaledTime < retryAt)
+            return;
         bool alreadyTracked = PoliceTransports.TryGetValue(id, out var crew);
         if (AssembledPoliceCars.Contains(id) ||
             (alreadyTracked && (crew.BrakingForDropOff || crew.ExitInProgress)))
@@ -1049,7 +1083,14 @@ public sealed class CombatPlugin : BasePlugin
             if (prefab == null)
                 continue;
 
-            var officer = Object.Instantiate(prefab, car.transform.position, car.transform.rotation);
+            if (!TryFindOfficerSpawnPosition(prefab, car.transform.position, out Vector3 spawnPosition))
+            {
+                PoliceCrewRetryAt[id] = Time.unscaledTime + 10f;
+                log.LogWarning($"Policejní posily: posádka #{id} čeká na pěší NavMesh v okolí auta; další pokus za 10 s.");
+                break;
+            }
+
+            var officer = Object.Instantiate(prefab, spawnPosition, car.transform.rotation);
             PendingSeats.Add((patrol, car, seatType, officer, wave, crew, Time.frameCount));
             crew.Officers.Add(officer);
         }
@@ -1103,7 +1144,11 @@ public sealed class CombatPlugin : BasePlugin
             }
             entry.Crew.Officers.Remove(officer);
             if (entry.Patrol != null)
-                AssembledPoliceCars.Remove(entry.Patrol.GetInstanceID());
+            {
+                int patrolId = entry.Patrol.GetInstanceID();
+                AssembledPoliceCars.Remove(patrolId);
+                PoliceCrewRetryAt[patrolId] = Time.unscaledTime + 5f;
+            }
             if (officer.IsInCar && entry.Car != null)
                 entry.Car.ExitCarInstant(officer);
             Object.Destroy(officer.gameObject);
@@ -1131,6 +1176,10 @@ public sealed class CombatPlugin : BasePlugin
 
     private static bool BeginExit(PoliceTransport crew, CharacterControllerBase officer, bool pursuing)
     {
+        if (officer == null || officer.IsDead || !officer.IsInCar ||
+            PendingExits.Exists(e => e.Officer == officer))
+            return false;
+
         var brain = officer.AIBrain;
         if (brain == null || !officer.CanExitCar)
             return false;
@@ -1225,9 +1274,20 @@ public sealed class CombatPlugin : BasePlugin
         }
 
         var driver = interact.Driver;
-        bool exitDriver = driver != null && !driver.IsDead && driver.Faction == Faction.Police;
-        if (crew == null && !exitDriver)
+        bool exitDriver = driver != null && !driver.IsDead && driver.IsInCar &&
+            driver.Faction == Faction.Police;
+        bool exitPassengers = crew != null && crew.Officers.Exists(o => o != null && !o.IsDead &&
+            o.IsInCar && interact.Passengers != null && interact.Passengers.Contains(o));
+        if (!exitDriver && !exitPassengers)
+        {
+            if (crew != null)
+            {
+                DismountedPatrols.Add(id);
+                PoliceTransports.Remove(id);
+                ReleaseDropOffBrake(crew);
+            }
             return;
+        }
 
         float distance = Vector3.Distance(car.transform.position, player.transform.position);
         bool blockedNearby =
@@ -1273,8 +1333,21 @@ public sealed class CombatPlugin : BasePlugin
         DismountedPatrols.Remove(id);
         if (__instance.carController != null)
             PoliceProgress.Remove(__instance.carController.GetInstanceID());
+        PoliceCrewRetryAt.Remove(id);
+        AssembledPoliceCars.Remove(id);
         if (PoliceTransports.TryGetValue(id, out var active))
+        {
             PendingExits.RemoveAll(e => e.Crew == active);
+            for (int i = PendingSeats.Count - 1; i >= 0; i--)
+            {
+                if (PendingSeats[i].Crew != active)
+                    continue;
+                var pending = PendingSeats[i].Officer;
+                if (pending != null && !pending.IsInCar)
+                    Object.Destroy(pending.gameObject);
+                PendingSeats.RemoveAt(i);
+            }
+        }
         if (PoliceTransports.Remove(id, out var crew))
             ReleaseDropOffBrake(crew);
     }
