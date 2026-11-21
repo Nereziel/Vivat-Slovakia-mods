@@ -959,7 +959,17 @@ public sealed class CombatPlugin : BasePlugin
         }
 
         if (patrol == null || patrol.agent != __instance)
-            return true;
+        {
+            // A newly spawned police foot agent may have been disabled or
+            // detached from the NavMesh during a vehicle/exit transition.
+            // Never let the native CalculatePath log an engine error for it.
+            var officer = __instance.GetComponentInParent<CharacterControllerBase>();
+            if (officer == null || officer.IsPlayer || officer.Faction != Faction.Police)
+                return true;
+            __1?.ClearCorners();
+            __result = false;
+            return false;
+        }
 
         var filter = new NavMeshQueryFilter
         {
