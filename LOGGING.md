@@ -29,7 +29,7 @@ FilterSpuriousPartDamage = true
 
 - `LogPartDamage = false` vypne hlášky `Preskoceno poskozeni dilu` a výpisy prasklých kloubů. Oprava poškození zůstává aktivní.
 - `VerboseLogging = false` vypne ostatní informační hlášky modulu včetně záznamů dopravy.
-- `TracePlayerContacts = false` vypne diagnostické záznamy kontaktů auta. Lze zapnout samostatně.
+- `TracePlayerContacts = false` vypne diagnostické záznamy kontaktů auta. Aby se výpisy `Kontakt auta` zobrazily, musí být současně `VerboseLogging = true` **a** `TracePlayerContacts = true`. Při `VerboseLogging = false` se diagnostický patch kontaktů nezapíná ani ve starém `.cfg` s `TracePlayerContacts = true`.
 - `FilterSpuriousPartDamage = true` zachovává filtr nesmyslného poškození vozidla.
 
 V existujících souborech `.cfg` se dříve uložené hodnoty automaticky nepřepíší. Pokud je `TracePlayerContacts = true`, změň hodnotu ručně na `false`.
