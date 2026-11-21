@@ -17,7 +17,7 @@ using Object = UnityEngine.Object;
 
 namespace VivatPopulationMod;
 
-[BepInPlugin("local.vivat.combat", "Vivat Combat", "0.1.33")]
+[BepInPlugin("local.vivat.combat", "Vivat Combat", "0.1.34")]
 public sealed class CombatPlugin : BasePlugin
 {
     private Harmony markers;
@@ -127,7 +127,7 @@ public sealed class CombatPlugin : BasePlugin
     public override void Load()
     {
         log = Log;
-        Log.LogInfo("Police dispatch build: 0.1.33 (NavMesh agent guard, corrected crew spawn, guarded exits).");
+        Log.LogInfo("Police dispatch build: 0.1.34 (native agent rebinding, civilian path guard, crew spawn verification).");
         bool customPoliceEnabled = Config.Bind("Police", "CustomLogicEnabled", true,
             "Zapne vlastní logiku policejních posil, dopravy, výzbroje a navigace. Po změně restartuj hru.").Value;
         bool transportReinforcements = Config.Bind("Police", "TransportReinforcements", true,
@@ -967,7 +967,7 @@ public sealed class CombatPlugin : BasePlugin
 
         var officer = __instance.GetComponentInParent<CharacterControllerBase>();
         if (officer != null && !officer.IsPlayer && !officer.IsDead && !officer.IsInCar &&
-            officer.Faction == Faction.Police && TryRecoverPoliceFootAgent(__instance, officer))
+            TryRecoverPedestrianAgent(__instance, officer))
             return true;
 
         var patrol = __instance.GetComponentInParent<PoliceCar>();
@@ -1004,12 +1004,10 @@ public sealed class CombatPlugin : BasePlugin
         return false;
     }
 
-    private static bool TryRecoverPoliceFootAgent(NavMeshAgent agent, CharacterControllerBase officer)
+    private static bool TryRecoverPedestrianAgent(NavMeshAgent agent, CharacterControllerBase officer)
     {
-        if (agent == null || !agent.isActiveAndEnabled)
-            return false;
-        if (agent.isOnNavMesh)
-            return true;
+        if (agent == null || !agent.isActiveAndEnabled || agent.isOnNavMesh)
+            return agent != null && agent.isActiveAndEnabled && agent.isOnNavMesh;
         if (officer == null || officer.IsDead || officer.IsInCar ||
             officer.StateMachine?.ActiveStateType == CharacterStateType.ExitCar)
             return false;
@@ -1020,31 +1018,48 @@ public sealed class CombatPlugin : BasePlugin
             areaMask = agent.areaMask
         };
         Vector3 position = agent.transform.position;
-        // Only a small, nearly level correction is allowed here; do not
-        // teleport NPCs across buildings or floors to a different NavMesh.
-        return NavMesh.SamplePosition(position, out NavMeshHit hit, 2.5f, filter) &&
-            Mathf.Abs(hit.position.y - position.y) <= 0.8f &&
-            agent.Warp(hit.position) && agent.isOnNavMesh;
+        if (!NavMesh.SamplePosition(position, out NavMeshHit hit, 2.5f, filter) ||
+            Mathf.Abs(hit.position.y - position.y) > 0.8f)
+            return false;
+
+        // Warp may fail after Unity's native NavMeshAgent creation failed. Rebind
+        // the component at the sampled position instead of repeatedly calling
+        // CalculatePath on an agent with no native NavMesh registration.
+        if (agent.Warp(hit.position) && agent.isOnNavMesh)
+            return true;
+
+        Vector3 delta = hit.position - position;
+        agent.enabled = false;
+        officer.transform.position += delta;
+        agent.enabled = true;
+        bool recovered = agent.isOnNavMesh;
+        if (recovered && Time.unscaledTime >= nextPoliceFootNavigationReport)
+        {
+            nextPoliceFootNavigationReport = Time.unscaledTime + 5f;
+            log.LogInfo($"NavMesh: obnovené připojení NPC {officer.name}, oprava {delta.magnitude:0.0} m.");
+        }
+        return recovered;
     }
 
     private static bool PreparePoliceFootPath(CharacterAgentMovement __instance)
     {
         var officer = __instance.controller;
-        if (officer == null || officer.IsPlayer || officer.Faction != Faction.Police)
+        if (officer == null || officer.IsPlayer)
             return true;
 
         var agent = __instance.agent;
         if (officer.IsDead || officer.IsInCar || agent == null)
             return false;
-        if (TryRecoverPoliceFootAgent(agent, officer))
+        if (TryRecoverPedestrianAgent(agent, officer))
             return true;
 
         float now = Time.unscaledTime;
         if (now >= nextPoliceFootNavigationReport)
         {
             nextPoliceFootNavigationReport = now + 5f;
-            log.LogWarning($"Policejní posily: trasa pěšího policisty {officer.name} odložena, " +
-                $"agent aktivní={agent.isActiveAndEnabled}, na síti={agent.isOnNavMesh}.");
+            log.LogWarning($"NavMesh: trasa NPC {officer.name} odložena, " +
+                $"policie={officer.Faction == Faction.Police}, agent aktivní={agent.isActiveAndEnabled}, " +
+                $"na síti={agent.isOnNavMesh}, typ={agent.agentTypeID}.");
         }
         return false;
     }
@@ -1125,6 +1140,21 @@ public sealed class CombatPlugin : BasePlugin
             }
 
             var officer = Object.Instantiate(prefab, spawnPosition, car.transform.rotation);
+            if (officer == null)
+                continue;
+
+            var spawnedAgent = officer.GetComponentInChildren<NavMeshAgent>(true);
+            if (spawnedAgent != null && spawnedAgent.isActiveAndEnabled && !spawnedAgent.isOnNavMesh &&
+                !TryRecoverPedestrianAgent(spawnedAgent, officer))
+            {
+                // Never register a broken agent with the wave spawner or place
+                // it into a police car: its first attack path would be invalid.
+                log.LogWarning($"Policejní posily: prefab {officer.name} se nepřipojil k NavMeshi " +
+                    $"u hlídky #{id}; posádka zkusí vytvoření později.");
+                Object.Destroy(officer.gameObject);
+                PoliceCrewRetryAt[id] = Time.unscaledTime + 10f;
+                break;
+            }
             PendingSeats.Add((patrol, car, seatType, officer, wave, crew, Time.frameCount));
             crew.Officers.Add(officer);
         }
