@@ -66,8 +66,8 @@ internal static class ImpatientTraffic
     {
         var driver = __instance;
         var car = driver.carController;
-        if (car == null || car.IsPlayer || car.IsParked || car.IsDestroyed ||
-            car.IsMovementDisabled || !car.IsWheelPhysicsEnabled ||
+        if (car == null || car.IsPlayer || car.isPolice || car.PoliceCar != null ||
+            car.IsParked || car.IsDestroyed || car.IsMovementDisabled || !car.IsWheelPhysicsEnabled ||
             !driver.haveTarget || driver.destinationReached || driver.isPaused ||
             driver.isPoliceActive || driver.ignoreTrafficSigns || driver.hardLockOnTarget ||
             driver.isBranching || driver.targetType != DriverAI.TargetType.WorldPoint)
