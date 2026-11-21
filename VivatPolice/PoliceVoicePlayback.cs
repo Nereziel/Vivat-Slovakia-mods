@@ -28,6 +28,7 @@ public sealed class PoliceVoicePlayback : MonoBehaviour
 
     public PoliceVoicePlayback(IntPtr pointer) : base(pointer) { }
 
+    [Il2CppInterop.Runtime.Attributes.HideFromIl2Cpp]
     internal void Initialize(ManualLogSource source) => log = source;
 
     internal static void Register(Policeman __instance) =>

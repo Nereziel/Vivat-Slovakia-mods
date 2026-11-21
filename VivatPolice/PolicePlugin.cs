@@ -13,12 +13,13 @@ using Object = UnityEngine.Object;
 
 namespace VivatPopulationMod;
 
-[BepInPlugin("local.vivat.police", "Vivat Police", "0.1.0")]
+[BepInPlugin("local.vivat.police", "Vivat Police", "0.1.5")]
 public sealed class PolicePlugin : BasePlugin
 {
     private Harmony policeTransport;
     private Harmony policeBalance;
     private Harmony policeNavigation;
+    private Harmony policeAim;
     private PoliceDispatch policeDispatch;
     private Harmony policeVoices;
     private PoliceVoicePlayback policePlayback;
@@ -37,9 +38,22 @@ public sealed class PolicePlugin : BasePlugin
     private static readonly Dictionary<int, PatrolApproach> PatrolApproaches = new();
     private static Spawner replacementSpawner;
     private static float nextLowStrengthDispatch;
+    private static Spawner pendingEmptySpawner;
+    private static int pendingEmptyCar;
+    private static int pendingEmptyCount;
+    private static float footFallbackUntil;
+    private static float nextStreetApproach;
+    private static readonly List<PoliceCar> ApproachCandidates = new();
+    private static readonly Dictionary<int, float> ArrivedUntil = new();
+    private static CharacterControllerBase registeringPassenger;
     private static readonly HashSet<int> ReplacedEmptyCars = new();
     private static readonly Dictionary<int, float> EmptyCarRetryAt = new();
     private static readonly HashSet<int> EmptyCarsThisScan = new();
+    private static WaveSpawner modifiedWave;
+    private static int originalWaveLimit;
+    private static float originalWaveInterval;
+    private static bool originalUseCurve;
+    private static AnimationCurve originalWaveCurve;
     private static int countBeforeReplacement;
     private static float replacementTime;
 
@@ -85,6 +99,7 @@ public sealed class PolicePlugin : BasePlugin
         internal readonly List<CharacterControllerBase> CreatedOfficers = new(3);
         internal bool BrakingForDropOff;
         internal bool ExitInProgress;
+        internal bool DriverExitDue;
         internal float RetryExitAt;
 
         internal PoliceTransport(CarController vehicle, CarInteract car)
@@ -96,7 +111,7 @@ public sealed class PolicePlugin : BasePlugin
     public override void Load()
     {
         log = Log;
-        Log.LogInfo("Vivat Police 0.1.0: samostatný dispečink a policejní AI.");
+        Log.LogInfo("Vivat Police 0.1.5: čtyři výjezdové hlídky od začátku pátrání.");
         bool customPoliceEnabled = Config.Bind("Police", "CustomLogicEnabled", true,
             "Zapne vlastní logiku policejních posil, dopravy, výzbroje a navigace. Po změně restartuj hru.").Value;
         bool transportReinforcements = Config.Bind("Police", "TransportReinforcements", true,
@@ -117,11 +132,24 @@ public sealed class PolicePlugin : BasePlugin
             "Limit pěších posil, pokud dispečink během 15 sekund nesežene hlídku. 0 = bez pěší zálohy.",
             new AcceptableValueRange<int>(0, 5))).Value;
         policeDropOffDistance = Config.Bind("Police", "DropOffDistance", 48f, new ConfigDescription(
-            "Vzdálenost od hráče v metrech, na které hlídka začne brzdit kvůli výstupu.",
+            "Dosah příjezdu v metrech. U hráče pěšky hlídka zpomalí podle rychlosti a zastaví blíž k němu.",
             new AcceptableValueRange<float>(30f, 70f))).Value;
         bool balanceWaves = Config.Bind("Police", "BalanceWaves", true,
             "S dopravou zapnutou mají přednost posily autem. Jinak počet pěších posil roste pozvolna.").Value;
         policeBalanceEnabled = customPoliceEnabled && balanceWaves;
+        if (customPoliceEnabled)
+        {
+            policeAim = Install("police-aim", harmony =>
+            {
+                foreach (var name in new[] { nameof(Weapon.SecondaryAction), nameof(Weapon.CancelSecondaryAction) })
+                {
+                    var method = AccessTools.DeclaredMethod(typeof(Weapon), name, Type.EmptyTypes)
+                        ?? throw new MissingMethodException(nameof(Weapon), name);
+                    harmony.Patch(method, prefix: Callback(nameof(PreparePoliceAim)));
+                    Log.LogInfo($"Harmony: Weapon.{name}");
+                }
+            });
+        }
         if (policeBalanceEnabled)
         {
             policeBalance = Install("police-balance", harmony =>
@@ -129,6 +157,7 @@ public sealed class PolicePlugin : BasePlugin
                 var activate = AccessTools.DeclaredMethod(typeof(WaveSpawner), "Activate", Type.EmptyTypes)
                     ?? throw new MissingMethodException(nameof(WaveSpawner), "Activate");
                 harmony.Patch(activate, prefix: Callback(nameof(BalancePoliceWave)));
+                Patch(harmony, typeof(WaveSpawner), "Deactivate", Type.EmptyTypes, nameof(OnWaveDeactivated));
                 Log.LogInfo("Harmony: WaveSpawner.Activate");
             });
         }
@@ -142,6 +171,11 @@ public sealed class PolicePlugin : BasePlugin
                 if (!policeTransportEnabled)
                     return;
                 Patch(harmony, typeof(DriverAI), "FixedTick", Type.EmptyTypes, nameof(ReverseStalledPatrol));
+                var togglePolice = AccessTools.DeclaredMethod(typeof(DriverAI), nameof(DriverAI.TogglePolice),
+                    new[] { typeof(bool), typeof(float), typeof(bool) })
+                    ?? throw new MissingMethodException(nameof(DriverAI), nameof(DriverAI.TogglePolice));
+                harmony.Patch(togglePolice, prefix: Callback(nameof(HasDriverAI)));
+                Log.LogInfo("Harmony: DriverAI.TogglePolice");
                 Patch(harmony, typeof(PoliceCar), "Update", Type.EmptyTypes, nameof(CheckPoliceArrival));
                 var deactivation = AccessTools.DeclaredMethod(typeof(PoliceCar), "OnWantedLevelDeactivated",
                     Type.EmptyTypes) ?? throw new MissingMethodException(nameof(PoliceCar), "OnWantedLevelDeactivated");
@@ -158,12 +192,12 @@ public sealed class PolicePlugin : BasePlugin
                         new[] { typeof(Vector3), typeof(NavMeshPath) })
                     ?? throw new MissingMethodException(nameof(NavMeshAgent), "CalculatePath");
                 harmony.Patch(calculatePath, prefix: Callback(nameof(CalculatePolicePath)));
-                var repath = AccessTools.DeclaredMethod(typeof(CharacterAgentMovement), "RepathInternal", Type.EmptyTypes)
-                    ?? throw new MissingMethodException(nameof(CharacterAgentMovement), "RepathInternal");
-                harmony.Patch(repath, prefix: Callback(nameof(PreparePoliceFootPath)));
-                Log.LogInfo("Harmony: NavMeshAgent.CalculatePath, CharacterAgentMovement.RepathInternal");
+                Log.LogInfo("Harmony: NavMeshAgent.CalculatePath");
             });
-            policeDispatch = AddComponent<PoliceDispatch>();
+            if (policeTransport != null)
+                policeDispatch = AddComponent<PoliceDispatch>();
+            else
+                policeTransportEnabled = false;
         }
         if (Config.Bind("PoliceVoices", "Enabled", true, "Přidá prostorové slovenské pokřiky pěších policistů.").Value)
         {
@@ -184,6 +218,7 @@ public sealed class PolicePlugin : BasePlugin
         policeTransport?.UnpatchSelf();
         policeBalance?.UnpatchSelf();
         policeNavigation?.UnpatchSelf();
+        policeAim?.UnpatchSelf();
         policeVoices?.UnpatchSelf();
         if (policeDispatch != null)
             Object.Destroy(policeDispatch);
@@ -194,12 +229,13 @@ public sealed class PolicePlugin : BasePlugin
                 Object.Destroy(entry.Officer.gameObject);
         PendingSeats.Clear();
         PendingExits.Clear();
-        foreach (var crew in PoliceTransports.Values)
-            ReleaseDropOffBrake(crew);
+        foreach (var crew in new List<PoliceTransport>(PoliceTransports.Values))
+            ReleaseTransport(crew);
         PoliceTransports.Clear();
         PoliceCrewRetryAt.Clear();
         AssembledPoliceCars.Clear();
         RestorePoliceCarCapacity();
+        RestoreWave();
         return true;
     }
 
@@ -244,6 +280,7 @@ public sealed class PolicePlugin : BasePlugin
         if (wanted == null || wanted.waveSpawner != __instance)
             return;
 
+        RememberWave(__instance);
         if (policeTransportEnabled)
         {
             SetPoliceFootFallback(__instance, 0);
@@ -265,6 +302,7 @@ public sealed class PolicePlugin : BasePlugin
         if (wave == null)
             return;
 
+        RememberWave(wave);
         wave.useSpawnCurve = false;
         wave.spawnInterval = 5f;
         if (wave.maxSpawned == limit)
@@ -274,6 +312,37 @@ public sealed class PolicePlugin : BasePlugin
         log.LogInfo($"Policejní posily: limit pěší zálohy {limit}.");
     }
 
+    private static void RememberWave(WaveSpawner wave)
+    {
+        if (modifiedWave == wave)
+            return;
+        RestoreWave();
+        modifiedWave = wave;
+        originalWaveLimit = wave.maxSpawned;
+        originalWaveInterval = wave.spawnInterval;
+        originalUseCurve = wave.useSpawnCurve;
+        originalWaveCurve = wave.spawnCurve;
+    }
+
+    private static void OnWaveDeactivated(WaveSpawner __instance)
+    {
+        if (modifiedWave == __instance)
+            RestoreWave();
+    }
+
+    private static void RestoreWave()
+    {
+        if (modifiedWave != null)
+        {
+            modifiedWave.maxSpawned = originalWaveLimit;
+            modifiedWave.spawnInterval = originalWaveInterval;
+            modifiedWave.useSpawnCurve = originalUseCurve;
+            modifiedWave.spawnCurve = originalWaveCurve;
+        }
+        modifiedWave = null;
+        originalWaveCurve = null;
+    }
+
     private static void PreparePoliceReinforcement(WaveSpawner __instance, CharacterControllerBase __0)
     {
         var wanted = WantedSystem.instance;
@@ -281,8 +350,21 @@ public sealed class PolicePlugin : BasePlugin
             __0 == null || __0.IsDead || __0.Faction != Faction.Police)
             return;
 
-        if (policeLoadouts && !__0.IsInCar)
+        if (policeLoadouts && !__0.IsInCar && __0 != registeringPassenger)
             ApplyPoliceLoadout(__0, false);
+    }
+
+    private static void PreparePoliceAim(Weapon __instance)
+    {
+        if (__instance.aimTokenNameStart != null && __instance.aimTokenNameCancel != null)
+            return;
+        var owner = __instance.owner;
+        if (owner == null || owner.IsPlayer || owner.Faction != Faction.Police)
+            return;
+        int id = __instance.GetInstanceID();
+        __instance.aimTokenNameStart ??= $"Aim_Start_{id}";
+        __instance.aimTokenNameCancel ??= $"Aim_Cancel_{id}";
+        log.LogInfo($"Policejní AI: obnoveny klíče míření pro {__instance.name} #{id}.");
     }
 
     internal static void DispatchPoliceCar()
@@ -294,11 +376,17 @@ public sealed class PolicePlugin : BasePlugin
             reportedMissingPoliceSpawner = false;
             debugInitialDispatchSent = false;
             ReplacedEmptyCars.Clear();
+            pendingEmptySpawner = null;
+            footFallbackUntil = 0f;
+            nextStreetApproach = 0f;
+            ArrivedUntil.Clear();
+            ApproachCandidates.Clear();
             EmptyCarRetryAt.Clear();
             nextLowStrengthDispatch = 0f;
             nextPoliceDispatchDebug = 0f;
-            foreach (var crew in PoliceTransports.Values)
-                ReleaseDropOffBrake(crew);
+            if (PoliceTransports.Count > 0)
+                foreach (var crew in new List<PoliceTransport>(PoliceTransports.Values))
+                    ReleaseTransport(crew);
             // End every outstanding transition before a new wanted episode.
             // Unseated prefab instances do not belong to the game spawner yet.
             foreach (var entry in PendingSeats)
@@ -317,11 +405,12 @@ public sealed class PolicePlugin : BasePlugin
             DismountedPatrols.Clear();
             AssembledPoliceCars.Clear();
             RestorePoliceCarCapacity();
+            RestoreWave();
             return;
         }
 
         if (policeWantedSince == 0f)
-            policeWantedSince = Time.unscaledTime;
+            policeWantedSince = Time.time;
         var game = GameManager.instance;
         var player = game != null ? game.PlayerController : null;
         var world = WorldManager.instance;
@@ -329,31 +418,32 @@ public sealed class PolicePlugin : BasePlugin
             return;
 
         var playerPosition = player.transform.position;
-        float wantedDuration = Time.unscaledTime - policeWantedSince;
+        float wantedDuration = Time.time - policeWantedSince;
         const int maximumPatrols = 6;
-        int targetPatrols = wantedDuration < 30f ? 1 : wantedDuration < 120f
-            ? 2
-            : Math.Min(maximumPatrols, 3 + (int)((wantedDuration - 120f) / 60f));
+        int targetPatrols = Math.Min(maximumPatrols, 4 + (int)(wantedDuration / 180f));
 
-        targetPatrols = Math.Max(targetPatrols, debugInitialPoliceCars);
         var spawner = WorldManager.CarPoliceSpawner;
-        if (spawner != null && debugInitialPoliceCars > 0 && !debugInitialDispatchSent)
+        if (spawner != null && !debugInitialDispatchSent)
         {
             debugInitialDispatchSent = true;
-            ReservePoliceCarCapacity(spawner, targetPatrols);
+            int initialCars = Math.Max(targetPatrols, debugInitialPoliceCars);
+            ReservePoliceCarCapacity(spawner, initialCars);
             int before = spawner.Spawned;
-            int requested = Math.Max(0, debugInitialPoliceCars - before);
-            for (int i = 0; i < requested && spawner.Spawned < debugInitialPoliceCars; i++)
+            int requested = Math.Max(0, initialCars - before);
+            for (int i = 0; i < requested && spawner.Spawned < initialCars; i++)
                 spawner.Spawn();
-            log.LogInfo($"Police debug: start wanted, cíl {debugInitialPoliceCars}, požadavky {requested}, " +
+            log.LogInfo($"Police debug: start wanted, cíl {initialCars}, požadavky {requested}, " +
                         $"spawnuto {before}->{spawner.Spawned}, volné body {spawner.availableSpawnpoints}.");
         }
 
-        bool reportDebug = debugInitialPoliceCars > 0 && Time.unscaledTime >= nextPoliceDispatchDebug;
+        bool reportDebug = debugInitialPoliceCars > 0 && Time.time >= nextPoliceDispatchDebug;
         if (reportDebug)
-            nextPoliceDispatchDebug = Time.unscaledTime + 5f;
+            nextPoliceDispatchDebug = Time.time + 5f;
 
         int nearbyPatrols = 0;
+        float closestPatrol = float.PositiveInfinity;
+        ApproachCandidates.Clear();
+        var camera = Camera.main;
         int activeTransports = 0;
         foreach (var existing in PoliceTransports.Values)
         {
@@ -364,34 +454,35 @@ public sealed class PolicePlugin : BasePlugin
                 activeTransports++;
         }
         EmptyCarsThisScan.Clear();
-        foreach (var vehicle in Object.FindObjectsByType<CarController>(FindObjectsSortMode.None))
+        // The wanted registry can be empty while enabled native patrols are pursuing the player.
+        foreach (var patrol in Object.FindObjectsByType<PoliceCar>(FindObjectsSortMode.None))
         {
-            if (vehicle == null || !vehicle.gameObject.activeInHierarchy)
+            if (patrol == null || !patrol.isActiveAndEnabled)
                 continue;
-
-            float distance = (vehicle.transform.position - playerPosition).sqrMagnitude;
-            var patrol = vehicle.PoliceCar;
+            var vehicle = patrol.carController;
+            if (vehicle == null || vehicle.IsPlayer)
+                continue;
             bool nativePoliceVehicle = spawner != null && vehicle.Spawner == spawner;
-            if (patrol == null && !nativePoliceVehicle && !vehicle.isPolice)
-                continue;
-
-            if (patrol == null && nativePoliceVehicle)
-                patrol = vehicle.GetComponentInChildren<PoliceCar>();
-
+            float distance = (vehicle.transform.position - playerPosition).sqrMagnitude;
             if (reportDebug)
                 ReportPoliceVehicle(vehicle, patrol, Mathf.Sqrt(distance));
-
-            // A police-looking traffic car without the PoliceCar component is not
-            // a dispatchable patrol. In particular, wrecks that have already gone
-            // through DriverDeath/Despawn may remain visible for some time.
-            // Do not include these objects in crew or empty-patrol replacement.
-            if (patrol == null)
+            if (!nativePoliceVehicle)
                 continue;
 
-            if (nativePoliceVehicle &&
-                ReplaceStalledPatrol(vehicle, patrol, spawner, wanted.waveSpawner, player))
+            if (ReplaceStalledPatrol(vehicle, patrol, spawner, player))
                 continue;
 
+            var driver = vehicle.CarInteract?.Driver;
+            if (patrol.IsActive && driver != null && !driver.IsDead && driver.Faction == Faction.Police)
+            {
+                closestPatrol = Mathf.Min(closestPatrol, Mathf.Sqrt(distance));
+                if (distance <= policeDropOffDistance * policeDropOffDistance)
+                    ArrivedUntil[vehicle.GetInstanceID()] = Time.time + 20f;
+                else if (camera != null &&
+                    vehicle.DriverAI != null && vehicle.Rigidbody != null && !IsPatrolVisible(camera, vehicle.transform.position) &&
+                    vehicle.CarInteract.Passengers?.Contains(player) != true)
+                    ApproachCandidates.Add(patrol);
+            }
             if (patrol != null && distance <= 230f * 230f)
                 RecoverStoppedPoliceCar(vehicle, patrol, spawner, playerPosition);
 
@@ -399,7 +490,6 @@ public sealed class PolicePlugin : BasePlugin
                 continue;
 
             var car = vehicle.CarInteract;
-            var driver = car != null ? car.Driver : null;
             if (driver != null && !driver.IsDead)
                 ReplacedEmptyCars.Remove(vehicle.GetInstanceID());
             if (car == null || vehicle.IsPlayer || driver == player)
@@ -425,12 +515,12 @@ public sealed class PolicePlugin : BasePlugin
 
             // Stuck vehicles must not suppress pedestrian backup or count as responding patrols.
             bool stalled = PoliceProgress.TryGetValue(vehicle.GetInstanceID(), out var progress) &&
-                Time.unscaledTime - progress.StationarySince >= 9f &&
+                Time.time - progress.StationarySince >= 9f &&
                 Mathf.Abs(vehicle.SpeedPerSecond) < 1f;
             bool stoppingForCrew = patrol != null &&
                 PoliceTransports.TryGetValue(patrol.GetInstanceID(), out var transport) &&
                 (transport.BrakingForDropOff || transport.ExitInProgress);
-            if (patrol != null && patrol.IsActive && (!stalled || stoppingForCrew))
+            if (patrol.IsActive && distance <= policeDropOffDistance * policeDropOffDistance && (!stalled || stoppingForCrew))
                 nearbyPatrols++;
 
             if (patrol != null && patrol.IsActive && distance >= 32f * 32f)
@@ -448,15 +538,41 @@ public sealed class PolicePlugin : BasePlugin
         if (reportDebug)
         {
             string population = spawner != null ? $"{spawner.Spawned}/{spawner.GetMaxSpawned()}" : "nedostupný";
-            log.LogInfo($"Police debug: {wantedDuration:0} s wanted, poblíž {nearbyPatrols}/{targetPatrols}, " +
+            string closest = float.IsPositiveInfinity(closestPatrol) ? "žádná" : $"{closestPatrol:0} m";
+            log.LogInfo($"Police debug: {wantedDuration:0} s wanted, v dosahu {nearbyPatrols}/{targetPatrols}, nejbližší hlídka {closest}, " +
                         $"policejní spawner {population}.");
+        }
+
+        if (!player.IsInCar && !player.IsDead && Time.time >= nextStreetApproach &&
+            ApproachCandidates.Count > 0 && spawner != null && spawner.worldPointsData != null)
+        {
+            int missing = targetPatrols;
+            foreach (float until in ArrivedUntil.Values)
+                if (Time.time < until)
+                    missing--;
+            nextStreetApproach = Time.time + 3f;
+            foreach (var candidate in ApproachCandidates)
+            {
+                if (missing <= 0)
+                    break;
+                int id = candidate.carController.GetInstanceID();
+                if (ArrivedUntil.TryGetValue(id, out float until) && Time.time < until)
+                    continue;
+                if (!TryStreetApproach(candidate, spawner.worldPointsData, playerPosition, camera))
+                    break;
+                ArrivedUntil[id] = Time.time + 20f;
+                missing--;
+                AssemblePoliceCrew(wanted.waveSpawner, candidate);
+            }
         }
 
         if (policeBalanceEnabled)
         {
             // Keep the wave cap in place while cars are unavailable. Lowering it
             // after the first foot officers arrive can interfere with their lifecycle.
-            bool needsFootFallback = nearbyPatrols == 0 && wantedDuration >= 15f;
+            if (nearbyPatrols == 0 && wantedDuration >= 15f)
+                footFallbackUntil = Time.time + 6f;
+            bool needsFootFallback = Time.time < footFallbackUntil;
             SetPoliceFootFallback(wanted.waveSpawner, needsFootFallback ? policeFootFallbackLimit : 0);
         }
 
@@ -466,7 +582,7 @@ public sealed class PolicePlugin : BasePlugin
             bool replacingStalled = replacementSpawner != null;
             RequestReplacementIfSlotIsFree(spawner, nearbyPatrols, targetPatrols);
             if (replacingStalled)
-                nextLowStrengthDispatch = Time.unscaledTime + 8f;
+                nextLowStrengthDispatch = Time.time + 8f;
             else
                 ReinforceEmptyPatrol(spawner, playerPosition, nearbyPatrols, targetPatrols);
         }
@@ -479,13 +595,37 @@ public sealed class PolicePlugin : BasePlugin
 
     private static void ReinforceEmptyPatrol(Spawner spawner, Vector3 playerPosition, int nearbyPatrols, int targetPatrols)
     {
-        if (nearbyPatrols >= targetPatrols || Time.unscaledTime < nextLowStrengthDispatch)
+        // The pool can fill on a later frame. Observe the count before requesting again.
+        if (pendingEmptySpawner != null)
+        {
+            if (pendingEmptySpawner == spawner && spawner.Spawned > pendingEmptyCount)
+            {
+                if (EmptyCarsThisScan.Contains(pendingEmptyCar))
+                    ReplacedEmptyCars.Add(pendingEmptyCar);
+                log.LogInfo($"Policejní posily: po žádosti za #{pendingEmptyCar} vzrostl počet aut {pendingEmptyCount}->{spawner.Spawned}.");
+                pendingEmptySpawner = null;
+            }
+            else if (pendingEmptySpawner != spawner || Time.time >= nextLowStrengthDispatch)
+            {
+                log.LogDebug($"Policejní posily: po žádosti za #{pendingEmptyCar} bez nárůstu počtu aut.");
+                pendingEmptySpawner = null;
+            }
+        }
+        if (nearbyPatrols >= targetPatrols || Time.time < nextLowStrengthDispatch)
             return;
+
+        if (spawner.Spawned < targetPatrols && spawner.Spawned < spawner.GetMaxSpawned())
+        {
+            nextLowStrengthDispatch = Time.time + 8f;
+            spawner.Spawn();
+            log.LogDebug("Policejní posily: vyžádána chybějící hlídka.");
+            return;
+        }
 
         foreach (int carId in EmptyCarsThisScan)
         {
             if (ReplacedEmptyCars.Contains(carId) ||
-                (EmptyCarRetryAt.TryGetValue(carId, out var nextAttempt) && Time.unscaledTime < nextAttempt))
+                (EmptyCarRetryAt.TryGetValue(carId, out var nextAttempt) && Time.time < nextAttempt))
                 continue;
 
             int liveOfficers = 0;
@@ -499,27 +639,23 @@ public sealed class PolicePlugin : BasePlugin
                 return;
 
             int before = spawner.Spawned;
-            nextLowStrengthDispatch = Time.unscaledTime + 8f;
-            EmptyCarRetryAt[carId] = Time.unscaledTime + 25f;
-            if (spawner.availableSpawnpoints <= 0)
+            nextLowStrengthDispatch = Time.time + 8f;
+            EmptyCarRetryAt[carId] = Time.time + 25f;
+            int baseLimit = reservedPoliceSpawner == spawner ? originalPoliceCarCapacity : spawner.GetMaxSpawned();
+            if (before >= Math.Max(baseLimit, targetPatrols) + targetPatrols)
                 return;
             ReservePoliceCarCapacity(spawner, Math.Max(targetPatrols, before + 1));
+            pendingEmptySpawner = spawner;
+            pendingEmptyCar = carId;
+            pendingEmptyCount = before;
             spawner.Spawn();
-            if (spawner.Spawned > before)
-            {
-                ReplacedEmptyCars.Add(carId);
-                log.LogInfo($"Policejní posily: náhrada za prázdné auto #{carId}, živí policisté {liveOfficers}/{2 * targetPatrols}, auta spawneru {before}->{spawner.Spawned}.");
-            }
-            else
-            {
-                log.LogInfo($"Policejní posily: náhradní vůz za #{carId} se nespawnul (stav {spawner.Spawned}/{spawner.GetMaxSpawned()}); opakování nejdříve za 25 s.");
-            }
+            log.LogDebug($"Policejní posily: žádost za prázdné auto #{carId}, živí policisté {liveOfficers}/{2 * targetPatrols}.");
             return;
         }
     }
 
     private static bool ReplaceStalledPatrol(CarController vehicle, PoliceCar patrol, Spawner spawner,
-        WaveSpawner wave, CharacterControllerBase player)
+        CharacterControllerBase player)
     {
         int id = vehicle.GetInstanceID();
         var position = vehicle.transform.position;
@@ -534,7 +670,7 @@ public sealed class PolicePlugin : BasePlugin
             return false;
         }
 
-        float now = Time.unscaledTime;
+        float now = Time.time;
         if (!PatrolApproaches.TryGetValue(id, out var approach))
         {
             PatrolApproaches.Add(id, new PatrolApproach { Anchor = position, Since = now });
@@ -570,19 +706,7 @@ public sealed class PolicePlugin : BasePlugin
 
         if (PoliceTransports.TryGetValue(patrol.GetInstanceID(), out var crew))
         {
-            foreach (var officer in crew.CreatedOfficers)
-            {
-                if (officer == null || car.Passengers == null || !car.Passengers.Contains(officer))
-                    continue;
-
-                car.ExitCarInstant(officer);
-                if (car.Passengers.Contains(officer))
-                    continue;
-
-                if (wave != null)
-                    wave.UnregisterCharacter(officer);
-                Object.Destroy(officer.gameObject);
-            }
+            ReleaseTransport(crew);
         }
 
         replacementSpawner = spawner;
@@ -600,7 +724,7 @@ public sealed class PolicePlugin : BasePlugin
         if (replacementSpawner == null)
             return;
 
-        float elapsed = Time.unscaledTime - replacementTime;
+        float elapsed = Time.time - replacementTime;
         if (replacementSpawner != spawner || elapsed >= 10f || nearbyPatrols >= targetPatrols)
         {
             replacementSpawner = null;
@@ -655,6 +779,9 @@ public sealed class PolicePlugin : BasePlugin
         log.LogInfo($"Policejní posily: konec couvání #{car.GetInstanceID()}, posun dozadu {meters:F1} m.");
     }
 
+    // Deactivation may arrive after the native car has already destroyed its driver component.
+    private static bool HasDriverAI(DriverAI __instance) => __instance != null;
+
     private static void RecoverStoppedPoliceCar(CarController vehicle, PoliceCar patrol, Spawner spawner,
         Vector3 playerPosition)
     {
@@ -666,7 +793,7 @@ public sealed class PolicePlugin : BasePlugin
         if (PoliceProgress.TryGetValue(id, out var reversing) && reversing.ReverseUntil > 0f)
             return;
         if (!patrol.IsActive || driver == null || officer == null || officer.IsDead || officer.IsPlayer ||
-            distanceSquared < 55f * 55f || Mathf.Abs(vehicle.SpeedPerSecond) >= 1f ||
+            Mathf.Abs(vehicle.SpeedPerSecond) >= 1f ||
             (PoliceTransports.TryGetValue(patrol.GetInstanceID(), out var crew) && crew.BrakingForDropOff))
         {
             PoliceProgress.Remove(id);
@@ -674,7 +801,7 @@ public sealed class PolicePlugin : BasePlugin
         }
 
         var position = vehicle.transform.position;
-        float now = Time.unscaledTime;
+        float now = Time.time;
         if (!PoliceProgress.TryGetValue(id, out var progress))
         {
             PoliceProgress[id] = new PoliceCarProgress { Position = position, StationarySince = now };
@@ -690,6 +817,11 @@ public sealed class PolicePlugin : BasePlugin
         }
 
         float stationaryFor = now - progress.StationarySince;
+        if (distanceSquared <= policeDropOffDistance * policeDropOffDistance)
+        {
+            progress.RepathRequested = stationaryFor >= 5f;
+            return;
+        }
         if (stationaryFor >= 7f && !progress.RepathRequested)
         {
             progress.RepathRequested = true;
@@ -753,10 +885,112 @@ public sealed class PolicePlugin : BasePlugin
             viewport.y >= -0.1f && viewport.y <= 1.1f;
     }
 
-    private static bool IsFreePoliceRoadPoint(CarController vehicle, WorldPoint point)
+    private static bool TryStreetApproach(PoliceCar patrol, WorldPointsData roads, Vector3 player, Camera camera)
     {
-        var hits = Physics.OverlapBox(point.Position + Vector3.up * 1.05f,
-            new Vector3(1.15f, 0.65f, 2.65f), point.Rotation, ~0, QueryTriggerInteraction.Ignore);
+        var vehicle = patrol.carController;
+        // Sample the actual lane segments. Their endpoints may both be well away from the player.
+        var visited = new HashSet<IntPtr>();
+        int nearLane = 0, outOfView = 0, grounded = 0;
+        float best = float.PositiveInfinity;
+        Vector3 bestPosition = default;
+        Quaternion bestRotation = default;
+        WorldPoint bestNext = null;
+        for (int i = 0; i < 17; i++)
+        {
+            float angle = i * Mathf.PI * 0.25f;
+            float radius = i == 0 ? 0f : i <= 8 ? 25f : 55f;
+            var probe = player + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * radius;
+            var node = roads.FindNearestWorldPoint(probe);
+            if (node == null)
+                continue;
+            InspectLane(node.PreviousWorldPoint);
+            InspectLane(node);
+        }
+        if (bestNext == null)
+        {
+            if (debugInitialPoliceCars > 0)
+                log.LogInfo($"Policejní příjezd: úseků {visited.Count}, kandidátů u hráče {nearLane}, " +
+                            $"mimo dohled {outOfView}, s povrchem {grounded}, volných 0.");
+            return false;
+        }
+
+        var body = vehicle.Rigidbody;
+        if (!body.isKinematic)
+        {
+            body.linearVelocity = Vector3.zero;
+            body.angularVelocity = Vector3.zero;
+        }
+        float before = Vector3.Distance(vehicle.transform.position, player);
+        body.position = bestPosition;
+        body.rotation = bestRotation;
+        Physics.SyncTransforms();
+        vehicle.DriverAI.SetWorldPoint(bestNext);
+        PoliceProgress.Remove(vehicle.GetInstanceID());
+        PatrolApproaches.Remove(vehicle.GetInstanceID());
+        log.LogInfo($"Policejní příjezd: auto #{vehicle.GetInstanceID()} přesunuto na příjezdovou ulici, " +
+                    $"{before:0} -> {Vector3.Distance(bestPosition, player):0} m od hráče.");
+        return true;
+
+        void InspectLane(WorldPoint start)
+        {
+            if (start == null || !visited.Add(start.Pointer))
+                return;
+            var next = start.NextWorldPoint;
+            if (next == null)
+                return;
+            Vector3 segment = next.Position - start.Position;
+            float length = segment.magnitude;
+            if (length < 4f)
+                return;
+            Vector3 forward = segment / length;
+            var rotation = Quaternion.LookRotation(forward, Vector3.up);
+            float along = Mathf.Clamp(Vector3.Dot(player - start.Position, forward), 0f, length);
+            float miss = Vector3.Distance(start.Position + forward * along, player);
+            if (miss > 36f)
+                return;
+            for (float lead = 32f; lead >= 0f; lead -= 8f)
+            {
+                Vector3 position = start.Position + forward * Mathf.Clamp(along - lead, 0f, length);
+                float distance = Vector3.Distance(position, player);
+                float score = miss + Mathf.Abs(distance - 32f);
+                if (distance < 12f || distance > 45f || score >= best || Mathf.Abs(position.y - player.y) > 5f)
+                    continue;
+                nearLane++;
+                if (IsPatrolVisible(camera, position))
+                    continue;
+                outOfView++;
+                if (!Physics.Raycast(position + Vector3.up * 2f, Vector3.down, out RaycastHit ground, 4f,
+                        vehicle.groundMask, QueryTriggerInteraction.Ignore) || ground.normal.y < 0.8f)
+                    continue;
+                grounded++;
+                if (!IsFreePoliceRoadPoint(vehicle, ground.point, rotation))
+                    continue;
+                best = score;
+                bestPosition = ground.point + Vector3.up * 0.35f;
+                bestRotation = rotation;
+                bestNext = next;
+            }
+        }
+    }
+
+    private static bool IsPatrolVisible(Camera camera, Vector3 position)
+    {
+        Vector3 roof = position + Vector3.up * 1.7f;
+        if (!IsInsideCamera(camera, roof))
+            return false;
+        if (!Physics.Linecast(camera.transform.position, roof, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore))
+            return true;
+        return hit.collider == null || hit.collider.GetComponentInParent<CarController>() != null ||
+               hit.collider.GetComponentInParent<CharacterControllerBase>() != null;
+    }
+
+    private static bool IsFreePoliceRoadPoint(CarController vehicle, WorldPoint point)
+        => IsFreePoliceRoadPoint(vehicle, point.Position, point.Rotation);
+
+    private static bool IsFreePoliceRoadPoint(CarController vehicle, Vector3 position, Quaternion rotation)
+    {
+        var hits = Physics.OverlapBox(position + Vector3.up * 1.05f,
+            new Vector3(1.15f, 0.65f, 2.65f), rotation, ~0, QueryTriggerInteraction.Ignore);
         foreach (var hit in hits)
             if (hit != null && hit.GetComponentInParent<CarController>() != vehicle)
                 return false;
@@ -814,16 +1048,14 @@ public sealed class PolicePlugin : BasePlugin
         reservedPoliceSpawner = null;
     }
 
-    // An invalid NavMeshAgent.CalculatePath call can come from the game's
-    // civilian AI as well as from a police prefab. Guard ALL invalid agents;
-    // keep native CalculatePath untouched when the agent is usable.
+    // Leave unrelated agents to the game. Only the patrol may use a static road query.
     private static bool CalculatePolicePath(NavMeshAgent __instance, Vector3 __0, NavMeshPath __1, ref bool __result)
     {
         if (__instance.isActiveAndEnabled && __instance.isOnNavMesh)
             return true;
 
         var officer = __instance.GetComponentInParent<CharacterControllerBase>();
-        if (officer != null && !officer.IsPlayer && !officer.IsDead && !officer.IsInCar &&
+        if (officer != null && officer.Faction == Faction.Police && !officer.IsPlayer && !officer.IsDead && !officer.IsInCar &&
             TryRecoverPedestrianAgent(__instance, officer))
             return true;
 
@@ -833,6 +1065,10 @@ public sealed class PolicePlugin : BasePlugin
             var car = __instance.GetComponentInParent<CarController>();
             patrol = car != null ? car.PoliceCar : null;
         }
+
+        if ((officer == null || officer.IsPlayer || officer.Faction != Faction.Police) &&
+            (patrol == null || patrol.agent != __instance))
+            return true;
 
         __result = false;
         __1?.ClearCorners();
@@ -849,7 +1085,7 @@ public sealed class PolicePlugin : BasePlugin
                 __result = NavMesh.CalculatePath(start.position, __0, filter, __1);
         }
 
-        float now = Time.unscaledTime;
+        float now = Time.time;
         if (now >= nextPoliceNavigationReport)
         {
             nextPoliceNavigationReport = now + 5f;
@@ -890,35 +1126,12 @@ public sealed class PolicePlugin : BasePlugin
         officer.transform.position += delta;
         agent.enabled = true;
         bool recovered = agent.isOnNavMesh;
-        if (recovered && Time.unscaledTime >= nextPoliceFootNavigationReport)
+        if (recovered && Time.time >= nextPoliceFootNavigationReport)
         {
-            nextPoliceFootNavigationReport = Time.unscaledTime + 5f;
+            nextPoliceFootNavigationReport = Time.time + 5f;
             log.LogInfo($"NavMesh: obnovené připojení NPC {officer.name}, oprava {delta.magnitude:0.0} m.");
         }
         return recovered;
-    }
-
-    private static bool PreparePoliceFootPath(CharacterAgentMovement __instance)
-    {
-        var officer = __instance.controller;
-        if (officer == null || officer.IsPlayer)
-            return true;
-
-        var agent = __instance.agent;
-        if (officer.IsDead || officer.IsInCar || agent == null)
-            return false;
-        if (TryRecoverPedestrianAgent(agent, officer))
-            return true;
-
-        float now = Time.unscaledTime;
-        if (now >= nextPoliceFootNavigationReport)
-        {
-            nextPoliceFootNavigationReport = now + 5f;
-            log.LogWarning($"NavMesh: trasa NPC {officer.name} odložena, " +
-                $"policie={officer.Faction == Faction.Police}, agent aktivní={agent.isActiveAndEnabled}, " +
-                $"na síti={agent.isOnNavMesh}, typ={agent.agentTypeID}.");
-        }
-        return false;
     }
 
     private static bool TryFindOfficerSpawnPosition(CharacterControllerBase prefab, Vector3 origin,
@@ -957,14 +1170,14 @@ public sealed class PolicePlugin : BasePlugin
             return;
 
         int id = patrol.GetInstanceID();
-        if (PoliceCrewRetryAt.TryGetValue(id, out var retryAt) && Time.unscaledTime < retryAt)
+        if (PoliceCrewRetryAt.TryGetValue(id, out var retryAt) && Time.time < retryAt)
             return;
         bool alreadyTracked = PoliceTransports.TryGetValue(id, out var crew);
         if (AssembledPoliceCars.Contains(id) ||
             (alreadyTracked && (crew.BrakingForDropOff || crew.ExitInProgress)))
             return;
 
-        bool later = Time.unscaledTime - policeWantedSince >= 60f;
+        bool later = Time.time - policeWantedSince >= 60f;
         int count = later ? UnityEngine.Random.Range(2, 5) : 2;
         crew ??= new PoliceTransport(patrol.carController, car);
         foreach (CarSeatType seatType in PolicePassengerSeats)
@@ -991,7 +1204,7 @@ public sealed class PolicePlugin : BasePlugin
 
             if (!TryFindOfficerSpawnPosition(prefab, car.transform.position, car.transform.rotation, out Vector3 spawnPosition))
             {
-                PoliceCrewRetryAt[id] = Time.unscaledTime + 10f;
+                PoliceCrewRetryAt[id] = Time.time + 10f;
                 log.LogWarning($"Policejní posily: posádka #{id} čeká na pěší NavMesh v okolí auta; další pokus za 10 s.");
                 break;
             }
@@ -999,6 +1212,8 @@ public sealed class PolicePlugin : BasePlugin
             var officer = Object.Instantiate(prefab, spawnPosition, car.transform.rotation);
             if (officer == null)
                 continue;
+            if (!officer.gameObject.activeSelf)
+                officer.gameObject.SetActive(true);
 
             var spawnedAgent = officer.GetComponentInChildren<NavMeshAgent>(true);
             if (spawnedAgent != null && spawnedAgent.isActiveAndEnabled && !spawnedAgent.isOnNavMesh &&
@@ -1009,7 +1224,7 @@ public sealed class PolicePlugin : BasePlugin
                 log.LogWarning($"Policejní posily: prefab {officer.name} se nepřipojil k NavMeshi " +
                     $"u hlídky #{id}; posádka zkusí vytvoření později.");
                 Object.Destroy(officer.gameObject);
-                PoliceCrewRetryAt[id] = Time.unscaledTime + 10f;
+                PoliceCrewRetryAt[id] = Time.time + 10f;
                 break;
             }
             PendingSeats.Add((patrol, car, seatType, officer, wave, crew, Time.frameCount));
@@ -1028,7 +1243,14 @@ public sealed class PolicePlugin : BasePlugin
 
     private static readonly List<(PoliceCar Patrol, CarInteract Car, CarSeatType Seat, CharacterControllerBase Officer,
         WaveSpawner Wave, PoliceTransport Crew, int Frame)> PendingSeats = new();
-    private static readonly List<(PoliceTransport Crew, CharacterControllerBase Officer, float Deadline, bool Pursuing)> PendingExits = new();
+    private sealed class PendingExit
+    {
+        internal PoliceTransport Crew;
+        internal CharacterControllerBase Officer;
+        internal float Deadline;
+        internal bool TimedOut;
+    }
+    private static readonly List<PendingExit> PendingExits = new();
 
     internal static void UpdateCrewTransitions()
     {
@@ -1043,7 +1265,8 @@ public sealed class PolicePlugin : BasePlugin
                 continue;
             try
             {
-                if (entry.Patrol != null && entry.Patrol.IsActive && entry.Car != null && entry.Wave != null &&
+                if (WantedSystem.WantedLevel == WantedLevel.Active && !officer.IsDead &&
+                    entry.Patrol != null && entry.Patrol.IsActive && entry.Car != null && entry.Wave != null &&
                     PoliceTransports.TryGetValue(entry.Patrol.GetInstanceID(), out var current) &&
                     current == entry.Crew && entry.Car.GetCarSeat(entry.Seat)?.Character == null)
                 {
@@ -1051,10 +1274,11 @@ public sealed class PolicePlugin : BasePlugin
                     if (entry.Car.GetCarSeat(entry.Seat)?.Character == officer)
                     {
                         entry.Crew.CreatedOfficers.Add(officer);
-                        entry.Wave.RegisterCharacter(officer);
                         if (policeLoadouts)
                             ApplyPoliceLoadout(officer, true);
-                        log.LogInfo($"Policejní posily: obsazené sedadlo {entry.Seat}.");
+                        log.LogInfo($"Policejní posily: auto #{entry.Crew.Vehicle.GetInstanceID()}, sedadlo {entry.Seat}, " +
+                                    $"policista #{officer.GetInstanceID()}, aktivní={officer.gameObject.activeInHierarchy}, " +
+                                    $"model={officer.ActiveModel?.activeInHierarchy}, stav={officer.StateMachine?.ActiveStateType}.");
                         continue;
                     }
                 }
@@ -1064,11 +1288,14 @@ public sealed class PolicePlugin : BasePlugin
                 log.LogWarning($"Policejní posily: usazení {entry.Seat}: {error.Message}");
             }
             entry.Crew.Officers.Remove(officer);
+            entry.Crew.CreatedOfficers.Remove(officer);
+            if (entry.Wave != null && entry.Wave.characters != null && entry.Wave.characters.Contains(officer))
+                entry.Wave.UnregisterCharacter(officer);
             if (entry.Patrol != null)
             {
                 int patrolId = entry.Patrol.GetInstanceID();
                 AssembledPoliceCars.Remove(patrolId);
-                PoliceCrewRetryAt[patrolId] = Time.unscaledTime + 5f;
+                PoliceCrewRetryAt[patrolId] = Time.time + 5f;
             }
             if (officer.IsInCar && entry.Car != null)
                 entry.Car.ExitCarInstant(officer);
@@ -1079,23 +1306,70 @@ public sealed class PolicePlugin : BasePlugin
         {
             var entry = PendingExits[i];
             bool seated = entry.Crew.Car != null && entry.Officer != null &&
-                (entry.Crew.Car.Driver == entry.Officer || entry.Crew.Car.Passengers.Contains(entry.Officer));
-            if (entry.Officer != null && !entry.Officer.IsDead && (entry.Officer.IsInCar || seated ||
-                entry.Officer.StateMachine?.ActiveStateType == CharacterStateType.ExitCar) &&
-                Time.unscaledTime < entry.Deadline)
+                (entry.Crew.Car.Driver == entry.Officer || entry.Crew.Car.Passengers?.Contains(entry.Officer) == true);
+            if (entry.Officer == null || entry.Officer.IsDead || (!seated && !entry.Officer.gameObject.activeInHierarchy))
+            {
+                PendingExits.RemoveAt(i);
                 continue;
+            }
+            var state = entry.Officer.StateMachine?.ActiveStateType;
+            bool finished = !entry.Officer.IsInCar && !seated && state.HasValue &&
+                state != CharacterStateType.ExitCar && state != CharacterStateType.None;
+            if (!finished)
+            {
+                if (Time.time < entry.Deadline)
+                    continue;
+                if (!entry.TimedOut)
+                {
+                    entry.TimedOut = true;
+                    entry.Crew.DriverExitDue = true;
+                    log.LogWarning($"Policejní výstup #{entry.Officer.GetInstanceID()} čeká: sedí={seated}, stav={state}.");
+                    if (seated && entry.Crew.Car.Passengers?.Contains(entry.Officer) == true &&
+                        entry.Crew.Vehicle != null && !entry.Crew.Vehicle.IsPlayer &&
+                        Mathf.Abs(entry.Crew.Vehicle.SpeedPerSecond) <= 1.25f &&
+                        WantedSystem.WantedLevel == WantedLevel.Active &&
+                        GameManager.instance?.PlayerController?.IsInCar == false)
+                    {
+                        FinishPassengerExit(entry.Crew, entry.Officer);
+                        entry.Deadline = Time.time + 5f;
+                        continue;
+                    }
+                }
+                // The native animation can finish after the seat is already free.
+                if (state == CharacterStateType.ExitCar)
+                    continue;
+            }
             PendingExits.RemoveAt(i);
-            if (entry.Officer == null || entry.Officer.IsDead)
-                continue;
-            bool finished = !entry.Officer.IsInCar && !seated &&
-                entry.Officer.StateMachine?.ActiveStateType != CharacterStateType.ExitCar;
             log.LogInfo($"Policejní výstup #{entry.Officer.GetInstanceID()}: dokončen={finished}, sedí={seated}, stav={entry.Officer.StateMachine?.ActiveStateType}.");
             if (finished)
-                ActivateDismountedOfficer(entry.Officer, entry.Pursuing && WantedSystem.WantedLevel == WantedLevel.Active);
+            {
+                RegisterDismountedPassenger(entry.Crew, entry.Officer);
+                ActivateDismountedOfficer(entry.Officer, WantedSystem.WantedLevel == WantedLevel.Active);
+            }
         }
     }
 
-    private static bool BeginExit(PoliceTransport crew, CharacterControllerBase officer, bool pursuing)
+    private static void RegisterDismountedPassenger(PoliceTransport crew, CharacterControllerBase officer)
+    {
+        if (!crew.CreatedOfficers.Contains(officer))
+            return;
+        var wave = WantedSystem.instance?.waveSpawner;
+        if (wave == null || wave.characters == null)
+            return;
+        registeringPassenger = officer;
+        try
+        {
+            if (!wave.characters.Contains(officer))
+                wave.RegisterCharacter(officer);
+            crew.CreatedOfficers.Remove(officer);
+        }
+        finally
+        {
+            registeringPassenger = null;
+        }
+    }
+
+    private static bool BeginExit(PoliceTransport crew, CharacterControllerBase officer)
     {
         if (officer == null || officer.IsDead || !officer.IsInCar ||
             PendingExits.Exists(e => e.Officer == officer))
@@ -1104,17 +1378,61 @@ public sealed class PolicePlugin : BasePlugin
         var brain = officer.AIBrain;
         if (brain == null || !officer.CanExitCar)
             return false;
-        brain.Enable();
         var states = officer.StateMachine;
         if (states == null)
             return false;
-        if (states.ActiveStateType != CharacterStateType.ExitCar && !states.TrySetState(CharacterStateType.ExitCar))
+        if (!officer.gameObject.activeSelf && crew.Car.Passengers?.Contains(officer) == true)
         {
-            brain.ExitCar();
-            log.LogDebug($"Policejní výstup #{officer.GetInstanceID()}: AI převzala žádost ze stavu {states.ActiveStateType}.");
+            ExitPassengerInstant(crew, officer);
         }
-        PendingExits.Add((crew, officer, Time.unscaledTime + 8f, pursuing));
+        else if (states.ActiveStateType != CharacterStateType.ExitCar)
+        {
+            brain.Enable();
+            brain.ExitCar();
+        }
+        PendingExits.Add(new PendingExit { Crew = crew, Officer = officer, Deadline = Time.time + 8f });
         return true;
+    }
+
+    private static void ExitPassengerInstant(PoliceTransport crew, CharacterControllerBase officer)
+    {
+        if (!officer.gameObject.activeSelf)
+            officer.gameObject.SetActive(true);
+        crew.Car.ExitCarInstant(officer);
+        log.LogInfo($"Policejní výstup #{officer.GetInstanceID()}: použit okamžitý výstup spolujezdce.");
+    }
+
+    private static void FinishPassengerExit(PoliceTransport crew, CharacterControllerBase officer)
+    {
+        var states = officer.StateMachine?.availableStates;
+        if (states == null || !states.TryGetValue(CharacterStateType.ExitCar, out var state))
+            return;
+        var exit = state.TryCast<CharacterExitCarState>();
+        if (exit == null)
+            return;
+        foreach (var type in PolicePassengerSeats)
+        {
+            var seat = crew.Car.GetCarSeat(type);
+            if (seat == null || seat.Character != officer || seat.EnterSpot == null)
+                continue;
+            var agent = officer.Agent;
+            var filter = new NavMeshQueryFilter { agentTypeID = agent != null ? agent.agentTypeID : 0,
+                areaMask = agent != null ? agent.areaMask : NavMesh.AllAreas };
+            if (!NavMesh.SamplePosition(seat.EnterSpot.position, out NavMeshHit hit, 2.5f, filter) ||
+                Mathf.Abs(hit.position.y - seat.EnterSpot.position.y) > 1.5f)
+                return;
+            if (!officer.gameObject.activeSelf)
+                officer.gameObject.SetActive(true);
+            exit.carController = crew.Vehicle;
+            exit.InstantCarExit(hit.position, seat, crew.Vehicle.transform);
+            // The regular ExitCar sequence removes the passenger before selecting its instant branch.
+            if (!officer.IsInCar && crew.Car.Passengers?.Contains(officer) == true)
+                crew.Car.RemovePassenger(officer, type);
+            if (!officer.IsInCar && seat.Character == officer)
+                seat.character = null;
+            log.LogInfo($"Policejní výstup #{officer.GetInstanceID()}: nouzový výstup u dveří {type}.");
+            return;
+        }
     }
 
     private static void ApplyPoliceLoadout(CharacterControllerBase officer, bool vehicleCrew)
@@ -1133,6 +1451,9 @@ public sealed class PolicePlugin : BasePlugin
 
         if (!inventory.HasWeapon(WeaponType.Pistol))
             inventory.AddWeapon(WeaponType.Pistol, 48, false);
+        var attack = brain.ActiveBehaviour?.TryCast<AttackBehaviour>();
+        if (attack != null && attack.isActive)
+            return;
         var pistol = inventory.SelectWeapon(WeaponType.Pistol);
         if (pistol == null)
         {
@@ -1142,9 +1463,6 @@ public sealed class PolicePlugin : BasePlugin
 
         // Never remove or swap an in-use weapon while AttackBehaviour is active:
         // vanilla AimStop/CancelSecondaryAction may still reference its action state.
-        var attack = brain.ActiveBehaviour?.TryCast<AttackBehaviour>();
-        if (attack != null && attack.isActive)
-            return;
         inventory.EquipInstant(pistol);
         log.LogInfo($"Policejní výzbroj: pěší posila {officer.name} má vybavenou pistoli.");
     }
@@ -1160,7 +1478,8 @@ public sealed class PolicePlugin : BasePlugin
         var car = __instance.carController;
         var interact = car != null ? car.CarInteract : null;
         PoliceTransports.TryGetValue(id, out var crew);
-        if (player == null || car == null || interact == null)
+        if (player == null || car == null || interact == null || car.IsPlayer ||
+            car.Spawner == null || car.Spawner != WorldManager.CarPoliceSpawner)
         {
             if (crew != null)
                 ReleaseDropOffBrake(crew);
@@ -1169,10 +1488,10 @@ public sealed class PolicePlugin : BasePlugin
 
         if (crew != null && crew.ExitInProgress)
         {
-            if (PendingExits.Exists(e => e.Crew == crew))
+            if (PendingExits.Exists(e => e.Crew == crew && !e.TimedOut))
                 return;
             crew.ExitInProgress = false;
-            bool passengerSeated = crew.Officers.Exists(o => o != null && !o.IsDead && interact.Passengers.Contains(o));
+            bool passengerSeated = crew.Officers.Exists(o => o != null && !o.IsDead && interact.Passengers?.Contains(o) == true);
             if (!passengerSeated && (interact.Driver == null || interact.Driver.IsDead))
             {
                 DismountedPatrols.Add(id);
@@ -1213,9 +1532,10 @@ public sealed class PolicePlugin : BasePlugin
         float distance = Vector3.Distance(car.transform.position, player.transform.position);
         bool blockedNearby =
             PoliceProgress.TryGetValue(car.GetInstanceID(), out var progress) && progress.RepathRequested;
-        float range = blockedNearby ? Mathf.Max(80f, policeDropOffDistance) : policeDropOffDistance;
+        float speed = Mathf.Abs(car.SpeedPerSecond);
+        float range = blockedNearby ? policeDropOffDistance : Mathf.Min(policeDropOffDistance, 18f + speed * speed / 12f);
         if (crew != null && crew.BrakingForDropOff)
-            range += 8f;
+            range = policeDropOffDistance + 8f;
 
         if (distance > range)
         {
@@ -1241,11 +1561,8 @@ public sealed class PolicePlugin : BasePlugin
 
         if (PendingSeats.Exists(e => e.Crew == crew))
             return;
-        DisembarkPoliceCrew(crew, exitDriver ? driver : null, distance, pursuing);
-        crew.ExitInProgress = PendingExits.Exists(e => e.Crew == crew);
+        crew.ExitInProgress = DisembarkPoliceCrew(crew, exitDriver ? driver : null, distance);
         crew.RetryExitAt = Time.time + 1f;
-        if (!crew.ExitInProgress)
-            ReleaseDropOffBrake(crew);
     }
 
     private static void CancelPoliceDropOff(PoliceCar __instance)
@@ -1253,12 +1570,20 @@ public sealed class PolicePlugin : BasePlugin
         int id = __instance.GetInstanceID();
         DismountedPatrols.Remove(id);
         if (__instance.carController != null)
-            PoliceProgress.Remove(__instance.carController.GetInstanceID());
+        {
+            int vehicleId = __instance.carController.GetInstanceID();
+            PoliceProgress.Remove(vehicleId);
+            PatrolApproaches.Remove(vehicleId);
+            ReplacedEmptyCars.Remove(vehicleId);
+            EmptyCarRetryAt.Remove(vehicleId);
+        }
         PoliceCrewRetryAt.Remove(id);
         AssembledPoliceCars.Remove(id);
         if (PoliceTransports.TryGetValue(id, out var active))
         {
-            PendingExits.RemoveAll(e => e.Crew == active);
+            // Driver exit can disable PoliceCar synchronously. Keep observing detached officers.
+            PendingExits.RemoveAll(e => e.Crew == active && (e.Officer == null || e.Officer.IsInCar &&
+                e.Officer.StateMachine?.ActiveStateType != CharacterStateType.ExitCar));
             for (int i = PendingSeats.Count - 1; i >= 0; i--)
             {
                 if (PendingSeats[i].Crew != active)
@@ -1270,7 +1595,7 @@ public sealed class PolicePlugin : BasePlugin
             }
         }
         if (PoliceTransports.Remove(id, out var crew))
-            ReleaseDropOffBrake(crew);
+            ReleaseTransport(crew, keepExiting: true);
     }
 
     private static void EndPolicePursuit(PoliceCar __instance)
@@ -1291,20 +1616,56 @@ public sealed class PolicePlugin : BasePlugin
             crew.Vehicle.ToggleDriverAIIsBraking(false);
     }
 
-    private static bool DisembarkPoliceCrew(PoliceTransport crew, CharacterControllerBase driver,
-        float distance, bool pursuing)
+    private static void ReleaseTransport(PoliceTransport crew, bool keepExiting = false)
     {
-        int exited = 0;
+        ReleaseDropOffBrake(crew);
+        for (int i = crew.CreatedOfficers.Count - 1; i >= 0; i--)
+        {
+            var officer = crew.CreatedOfficers[i];
+            if (keepExiting && PendingExits.Exists(e => e.Crew == crew && e.Officer == officer))
+                continue;
+            crew.CreatedOfficers.RemoveAt(i);
+            if (officer == null)
+                continue;
+            if (crew.Car != null)
+                foreach (var type in PolicePassengerSeats)
+                {
+                    var seat = crew.Car.GetCarSeat(type);
+                    if (seat == null || seat.Character != officer)
+                        continue;
+                    crew.Car.RemovePassenger(officer, type);
+                    if (seat.Character == officer)
+                        seat.character = null;
+                    break;
+                }
+            Object.Destroy(officer.gameObject);
+        }
+    }
+
+    private static bool DisembarkPoliceCrew(PoliceTransport crew, CharacterControllerBase driver,
+        float distance)
+    {
+        if (crew.DriverExitDue && driver != null && crew.Car.Driver == driver && BeginExit(crew, driver))
+        {
+            log.LogInfo($"Policejní posily: výstup řidiče #{driver.GetInstanceID()} během obnovy výstupu posádky, {distance:0} m.");
+            return true;
+        }
         foreach (var officer in crew.Officers)
         {
-            if (officer == null || officer.IsDead || !crew.Car.Passengers.Contains(officer))
+            if (officer == null || officer.IsDead || crew.Car.Passengers?.Contains(officer) != true)
                 continue;
 
-            if (BeginExit(crew, officer, pursuing))
-                exited++;
+            if (BeginExit(crew, officer))
+            {
+                log.LogInfo($"Policejní posily: výstup cestujícího #{officer.GetInstanceID()}, {distance:0} m.");
+                return true;
+            }
+            // An unavailable seat must not hold the driver and the remaining passengers indefinitely.
+            continue;
         }
-        bool driverRequested = driver != null && crew.Car.Driver == driver && BeginExit(crew, driver, pursuing);
-        log.LogInfo($"Policejní posily: žádost o výstup, řidič={driverRequested}, cestující={exited}, vzdálenost={distance:0} m.");
+        bool driverRequested = driver != null && crew.Car.Driver == driver && BeginExit(crew, driver);
+        if (driverRequested)
+            log.LogInfo($"Policejní posily: výstup řidiče #{driver.GetInstanceID()}, {distance:0} m.");
         return driverRequested;
     }
 
@@ -1321,7 +1682,8 @@ public sealed class PolicePlugin : BasePlugin
         var policeman = officer.GetComponentInChildren<Policeman>();
         if (policeman != null)
         {
-            policeman.OnWantedLevelActivated();
+            if (!policeman.isEngaged && policeman.isActiveAndEnabled)
+                policeman.OnWantedLevelActivated();
             return;
         }
         // Fallback for police prefabs without a Policeman component.
@@ -1341,10 +1703,10 @@ public sealed class PoliceDispatch : MonoBehaviour
     private void Update()
     {
         PolicePlugin.UpdateCrewTransitions();
-        if (Time.unscaledTime < nextCheck)
+        if (Time.time < nextCheck)
             return;
 
-        nextCheck = Time.unscaledTime + 1f;
+        nextCheck = Time.time + 1f;
         PolicePlugin.DispatchPoliceCar();
     }
 }
