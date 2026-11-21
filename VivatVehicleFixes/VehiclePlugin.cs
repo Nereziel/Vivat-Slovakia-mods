@@ -428,7 +428,7 @@ public sealed class VehiclePlugin : BasePlugin
             return;
 
         var car = __instance.carController;
-        if (car == null || car.IsPlayer)
+        if (car == null || car.IsPlayer || car.isPolice || car.PoliceCar != null)
             return;
 
         float original = __result;
