@@ -35,8 +35,8 @@ const steps = [
   { title: 'Stáhni správný BepInEx', description: 'Vyber BepInEx 6: BepInEx-Unity.IL2CPP-win-x64. Nepoužívej varianty Mono ani x86.', link: BEPINEX_URL, linkText: 'Oficiální sestavení BepInEx' },
   { title: 'Rozbal BepInEx k souboru hry', description: 'Obsah archivu patří přímo vedle Vivat Slovakia.exe. Ve složce hry má být BepInEx/ i soubory loaderu, například winhttp.dll.' },
   { title: 'Poprvé spusť hru', description: 'Počkej na hlavní menu a hru ukonči. BepInEx vytvoří plugins/, config/ a interop/.' },
-  { title: 'Vyber si mod', description: 'V sekci Stažení stáhni ZIP konkrétního modu. Starší společný release může obsahovat také samostatné DLL.' },
-  { title: 'Rozbal a zachovej strukturu', description: 'ZIP rozbal do kořenové složky hry a potvrď sloučení BepInEx/. DLL patří do BepInEx/plugins/; pro Police zachovej i složku hlasů.' },
+  { title: 'Vyber si mod', description: 'V sekci Stažení si stáhni dostupný soubor DLL požadovaného modu z GitHub Releases. Pokud není soubor vydaný, web nabídne přechod na GitHub.' },
+  { title: 'Vlož DLL do plugins', description: 'Staženou DLL zkopíruj přímo do BepInEx/plugins/. Pokud použiješ vsechny.zip, rozbal z něj DLL do stejné složky. Pluginy nemusí mít vlastní podsložky.' },
   { title: 'Ověř načtení', description: 'Spusť hru a zkontroluj BepInEx/LogOutput.log. Hledej řádek Loading [název modu a verze].' },
 ];
 
@@ -51,11 +51,11 @@ const faqs = [
   },
   {
     question: 'Jak mod aktualizovat?',
-    answer: 'Zavři hru, odstraň staré DLL daného modu (i z podsložek BepInEx/plugins/) a rozbal nový ZIP do složky hry. Neponechávej dvě verze pluginu se stejným ID. Zvlášť smaž Vivat Combat 0.1.34 a starší před instalací novější verze.',
+    answer: 'Zavři hru, odstraň staré DLL daného modu z BepInEx/plugins/ i jeho případných podsložek a novou DLL vlož přímo do BepInEx/plugins/. Neponechávej dvě verze stejného pluginu. Zvlášť smaž Vivat Combat 0.1.34 a starší před instalací novější verze.',
   },
   {
     question: 'Jak mod vypnout?',
-    answer: 'Zavři hru a odeber odpovídající DLL nebo složku modu z BepInEx/plugins/. U Vivat Police můžeš odebrat také VivatPoliceVoices/. Některé funkce lze samostatně vypínat v konfiguraci pluginu.',
+    answer: 'Zavři hru a odeber odpovídající DLL z BepInEx/plugins/ (zkontroluj případné staré kopie v podsložkách). Pokud máš zvlášť policejní hlasy, můžeš odebrat i VivatPoliceVoices/. Některé funkce lze vypínat v konfiguraci pluginu.',
   },
   {
     question: 'Kde najdu konfigurační soubory?',
@@ -254,13 +254,13 @@ function Downloads({ catalog, status, error }: { catalog: ReleaseCatalog | null;
     <section className="section downloads-section" id="downloads" aria-labelledby="downloads-title">
       <div className="container">
         <div className="downloads-heading">
-          <SectionHeader id="downloads-title" index="02" eyebrow="AKTUÁLNÍ VYDÁNÍ" title="Stáhni. Rozbal. Hraj." description="Verze a soubory se načítají přímo z GitHub Releases. Každý plugin kontrolujeme samostatně podle názvu, tagu a přiložených souborů." />
+          <SectionHeader id="downloads-title" index="02" eyebrow="AKTUÁLNÍ VYDÁNÍ" title="Stáhni. Nainstaluj. Hraj." description="Verze a soubory se načítají přímo z GitHub Releases. Každý plugin kontrolujeme samostatně podle názvu, tagu a přiložených souborů." />
           <External className="subtle-external" href={RELEASES_URL}>Všechna vydání na GitHubu <ArrowUpRight size={16} /></External>
         </div>
         {status === 'ready' && catalog?.all && (
           <Reveal className="all-download">
             <div className="all-download-icon"><FileArchive size={29} strokeWidth={1.6} /></div>
-            <div className="all-download-copy"><span>SPOLEČNÝ ARCHIV</span><h3>Všechny mody v jednom ZIPu.</h3><p>Soubor <code>vsechny.zip</code> z GitHub Releases. Před instalací zkontroluj obsah balíčku a starší DLL.</p></div>
+            <div className="all-download-copy"><span>SPOLEČNÝ ARCHIV</span><h3>Všechny mody v jednom ZIPu.</h3><p>Soubor <code>vsechny.zip</code> z GitHub Releases. DLL z archivu patří do <code>BepInEx/plugins/</code>. Před instalací odstraň starší verze.</p></div>
             <External href={catalog.all.downloadUrl} className="btn btn-white">Stáhnout všechny mody <ArrowDownToLine size={18} /></External>
           </Reveal>
         )}
@@ -274,7 +274,7 @@ function Downloads({ catalog, status, error }: { catalog: ReleaseCatalog | null;
             {mods.map((mod) => <DownloadRow key={mod.id} mod={mod} entry={catalog?.mods[mod.id]} />)}
           </Reveal>
         )}
-        <div className="download-note"><Info size={17} /><p>Starší společný release může obsahovat samotné DLL, zatímco nové samostatné releasy obsahují instalační ZIP se strukturou BepInEx. Tlačítka uvádějí skutečný typ dostupného souboru.</p></div>
+        <div className="download-note"><Info size={17} /><p>Aktuálně zveřejněný release obsahuje jednotlivá DLL a společný archiv <code>vsechny.zip</code>. Samostatné DLL zkopíruj do <code>BepInEx/plugins/</code>. U každého modu se zobrazuje pouze soubor, který je skutečně přiložený k jeho vydání.</p></div>
       </div>
     </section>
   );
@@ -284,7 +284,7 @@ function Installation() {
   return (
     <section className="section install-section" id="installation" aria-labelledby="installation-title">
       <div className="container">
-        <SectionHeader id="installation-title" index="03" eyebrow="PRŮVODCE INSTALACÍ" title="Sedm kroků a hotovo." description="Nepotřebuješ žádný mod manager. Stačí správná verze BepInEx, stažený ZIP a pár minut ve složce hry." />
+        <SectionHeader id="installation-title" index="03" eyebrow="PRŮVODCE INSTALACÍ" title="Sedm kroků a hotovo." description="Nepotřebuješ žádný mod manager. Stačí BepInEx 6 a DLL požadovaného modu zkopírovaná do složky plugins." />
         <div className="install-layout">
           <div className="steps-grid">
             {steps.map((step, index) => (
@@ -303,17 +303,14 @@ function Installation() {
 ├── winhttp.dll
 └── BepInEx/
     ├── plugins/
-    │   ├── VivatCombat/
-    │   │   └── VivatCombat.dll
-    │   ├── VivatPolice/
-    │   │   └── VivatPolice.dll
-    │   └── VivatPoliceVoices/
-    │       ├── charon/
-    │       └── fenrir/
+    │   ├── VivatCombat.0.1.35.dll
+    │   ├── VivatVehicleFixes.0.1.14.dll
+    │   ├── VivatSpeedometer.0.1.0.dll
+    │   └── ...
     ├── config/
     ├── interop/
     └── LogOutput.log`}</code></pre>
-              <div className="folder-tip"><CircleAlert size={17} /><span>ZIP rozbal do složky hry, ne do <code>BepInEx/plugins/BepInEx/</code>.</span></div>
+              <div className="folder-tip"><CircleAlert size={17} /><span>DLL patří přímo do <code>BepInEx/plugins/</code>, nikoli vedle souboru hry. Složky modů nejsou potřeba.</span></div>
             </Reveal>
             <Reveal className="install-docs"><BookOpen size={26} /><h3>Potřebuješ podrobnější návod?</h3><p>Originální INSTALL.md obsahuje postup řešení problémů, aktualizací i poznámky k policejním hlasům.</p><External href={INSTALL_URL}>Přečíst INSTALL.md <ArrowUpRight size={17} /></External></Reveal>
           </aside>

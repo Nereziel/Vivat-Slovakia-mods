@@ -31,7 +31,7 @@ V repozitáři otevři **Settings → Pages → Build and deployment → Source:
 
 - Funkce modů a instalační postup vychází z aktuálních zdrojových souborů, `README.md`, `INSTALL.md` a `VivatRoadMarkingsFix/README.md` v tomto repozitáři.
 - Seznam aktuálních vydání načítá prohlížeč z veřejného GitHub API `GET /repos/Nereziel/Vivat-Slovakia-mods/releases?per_page=100`.
-- Modifikace se přiřazují podle názvu souboru a případně podle názvu/tagu samostatného vydání. ZIP má při stejné verzi přednost před DLL. Legacy společný release `build-1` obsahuje samostatné DLL, ale neobsahuje automaticky všechny mody.
+- Modifikace se přiřazují podle názvu skutečného souboru a případně podle názvu/tagu vydání. Pokud je pro stejnou verzi k dispozici DLL i ZIP, přednost má DLL. V současném společném release `build-1` jsou jednotlivá DLL (ne všechny mody), nikoli samostatné instalační ZIPy.
 - `vsechny.zip` se nabízí pouze tehdy, pokud je skutečně přiložen k některému zveřejněnému releasu.
 - Pokud GitHub API selže nebo dosáhne anonymního rate limitu (běžně 60 požadavků za hodinu na IP), web zobrazí odkaz na GitHub Releases. Žádné API klíče ani přihlášení nejsou potřeba.
 - Metadata Open Graph používají statický obrázek `public/og-cover.png`.
@@ -54,7 +54,7 @@ website/
 
 ### Poznámka k instalaci modů
 
-Samostatné ZIPy připravuje existující `build-and-release.cmd`. ZIP obsahuje `BepInEx/plugins/<Mod>/<DLL>`, u `VivatPolice` také `VivatPoliceVoices/`. Ve starších vydáních lze narazit na samotná DLL, jejichž umístění vyžaduje ruční kontrolu. Viz [INSTALL.md](../INSTALL.md).
+V aktuálním vydání jsou samostatná `.dll`; ulož je přímo do `Vivat Slovakia/BepInEx/plugins/`. Stejné místo použij pro jednotlivé DLL ze společného `vsechny.zip`. Soubory se nemusí ukládat do zvláštních složek pro každý mod. Vydávání nových balíčků přes `build-and-release.cmd` zůstává beze změny. Případné přibalené policejní hlasové soubory mají samostatnou cestu uvedenou v [INSTALL.md](../INSTALL.md).
 
 ## Licence a původ
 

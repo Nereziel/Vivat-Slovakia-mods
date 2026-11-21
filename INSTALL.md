@@ -18,30 +18,35 @@ Oficiální dokumentace: [Installing BepInEx on Il2Cpp Unity](https://docs.bepin
 
 ## 3. Stáhni a nainstaluj konkrétní mod
 
-1. Otevři [seznam samostatných vydání v README](README.md#sta%C5%BEen%C3%AD-jednotliv%C3%BDch-mod%C5%AF).
-2. Na stránce modulu stáhni jeho ZIP ze sekce **Assets** (např. `VivatPolice-v0.1.0.zip`).
-3. Rozbal obsah ZIPu **do složky s `Vivat Slovakia.exe`** a potvrď sloučení složky `BepInEx`.
-4. Zkontroluj, že DLL je např. `Vivat Slovakia/BepInEx/plugins/VivatPolice/VivatPolice.dll`.
-5. Spusť hru a ověř `Loading [Vivat Police 0.1.0]` v `BepInEx/LogOutput.log`.
+1. Otevři [GitHub Releases](https://github.com/Nereziel/Vivat-Slovakia-mods/releases) a v části **Assets** stáhni `.dll` požadovaného modu. Dostupné soubory se mohou lišit podle vydání; nynější společný release obsahuje jednotlivá DLL a `vsechny.zip`.
+2. Staženou `.dll` vlož **přímo do `Vivat Slovakia/BepInEx/plugins/`**. Nepotřebuje vlastní podsložku. Soubor nepřejmenovávej; například `VivatCombat.0.1.35.dll` je platný název.
+3. Pokud používáš `vsechny.zip`, rozbal z něj DLL soubory do stejné složky `BepInEx/plugins/`. Předem odstraň staré verze modů.
+4. Spusť hru a ověř načtení v `BepInEx/LogOutput.log` (`Loading [název modu]`).
 
-Můžeš instalovat pouze zvolené mody. `Vivat Police` a `Vivat Combat` jsou samostatné – mohou fungovat vedle sebe, ale není nutné mít oba.
-
-### Policejní pokřiky
-
-ZIP modulu Vivat Police zahrnuje také zvukové soubory do:
+Ukázka správné struktury:
 
 ```text
 Vivat Slovakia/
+├── Vivat Slovakia.exe
+├── winhttp.dll
 └── BepInEx/
-    └── plugins/
-        ├── VivatPolice/
-        │   └── VivatPolice.dll
-        └── VivatPoliceVoices/
-            ├── charon/*.wav
-            └── fenrir/*.wav
+    ├── plugins/
+    │   ├── VivatCombat.0.1.35.dll
+    │   ├── VivatVehicleFixes.0.1.14.dll
+    │   ├── VivatSpeedometer.0.1.0.dll
+    │   └── ...
+    ├── config/
+    ├── interop/
+    └── LogOutput.log
 ```
 
-Nepřesouvej hlasové soubory přímo do `VivatPolice/`, protože mod očekává výše uvedenou cestu.
+Každý mod lze instalovat samostatně. **Vivat Police** a **Vivat Combat** jsou oddělené pluginy; nemusíš instalovat oba.
+
+### Policejní pokřiky (pokud jsou součástí vydání)
+
+Pokud stahuješ vydání Vivat Police s hlasovými soubory, hlasy nejsou DLL a potřebují zachovat očekávanou cestu `BepInEx/plugins/VivatPoliceVoices/charon/` a `BepInEx/plugins/VivatPoliceVoices/fenrir/`. Samotné `VivatPolice.dll` může být přímo v `BepInEx/plugins/`.
+
+Pokud hlasové soubory ve vydání nejsou, nestahuj je z neověřených zdrojů. Aktuální společný release `build-1` neobsahuje samostatný soubor Vivat Police.
 
 ## 4. Aktualizace a odstranění starých DLL
 
@@ -50,10 +55,10 @@ Nepřesouvej hlasové soubory přímo do `VivatPolice/`, protože mod očekává
 Zvlášť po oddělení policie od boje:
 
 - Smaž staré soubory `VivatCombat.0.1.34.dll`, `VivatCombat.0.1.33.dll` a případné další staré verze pluginu `local.vivat.combat`.
-- Nainstaluj `VivatCombat.dll` **0.1.35+** a samostatný `VivatPolice.dll` **0.1.0+**.
+- Nainstaluj DLL Vivat Combat **0.1.35+** a případně samostatné DLL Vivat Police (je-li zveřejněné); názvy distribuovaných souborů mohou obsahovat číslo verze.
 - U ostatních modů také ponech pouze jednu aktuální DLL se stejným ID pluginu.
 
-Pokud máš dříve nainstalované policejní hlasy samostatně, stačí je při aktualizaci nahradit soubory z nového ZIPu.
+Pokud máš policejní hlasy nainstalované samostatně, při aktualizaci je nahraď pouze tehdy, když nové vydání skutečně obsahuje hlasové soubory.
 
 ## 5. Konfigurace
 
@@ -73,6 +78,6 @@ Policejní nastavení se po oddělení přesunula ze starého Combat configu do 
 - **Mod se nenačítá:** ověř `BepInEx/LogOutput.log`, správné složky, typ IL2CPP x64 a absenci duplicitních DLL.
 - **Chybí `BepInEx/interop`:** spusť hru jednou s BepInEx; interop knihovny se generují z konkrétní instalované verze hry.
 - **Policie hlásí NavMesh chyby:** pošli souvislý úsek logu s řádky `NavMesh:` a `Policejní posily:` včetně verze pluginu; samotné varování Unity neříká, které NPC je chybné.
-- **Chceš mod odebrat:** zavři hru a smaž jeho složku v `BepInEx/plugins/` (u policie případně také `VivatPoliceVoices/`).
+- **Chceš mod odebrat:** zavři hru a smaž jeho DLL z `BepInEx/plugins/` (včetně případných starých kopií v podsložkách). U policie případně také `VivatPoliceVoices/`.
 
 Nepřidávej do veřejných issue ani release archivů soubory původní hry či vygenerované IL2CPP knihovny.

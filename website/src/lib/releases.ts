@@ -107,9 +107,10 @@ function compareDates(a: string | null, b: string | null): number {
 
 function bestAsset(assets: GithubAsset[]): GithubAsset | null {
   if (!assets.length) return null;
-  // ZIP includes directory structure and is preferred over a DLL of the same release/version.
-  return [...assets].sort((a, b) => Number(b.name.toLowerCase().endsWith('.zip')) -
-    Number(a.name.toLowerCase().endsWith('.zip')))[0];
+  // Prefer the directly installable DLL when both DLL and ZIP are attached.
+  // A ZIP remains valid when it is the only published asset for that mod.
+  return [...assets].sort((a, b) => Number(b.name.toLowerCase().endsWith('.dll')) -
+    Number(a.name.toLowerCase().endsWith('.dll')))[0];
 }
 
 function modCandidate(release: GithubRelease, mod: ModDefinition): ModRelease | null {
@@ -152,7 +153,7 @@ function modCandidate(release: GithubRelease, mod: ModDefinition): ModRelease | 
 function isNewer(a: ModRelease, b: ModRelease): boolean {
   const versions = compareVersions(a.version, b.version);
   if (versions !== 0) return versions > 0;
-  if (a.format !== b.format && (a.format === 'ZIP' || b.format === 'ZIP')) return a.format === 'ZIP';
+  if (a.format !== b.format && (a.format === 'DLL' || b.format === 'DLL')) return a.format === 'DLL';
   const dates = compareDates(a.publishedAt, b.publishedAt);
   if (dates !== 0) return dates > 0;
   return Boolean(a.downloadUrl && !b.downloadUrl);
