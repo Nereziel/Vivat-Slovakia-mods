@@ -18,15 +18,19 @@ public sealed class TrainerPlugin : BasePlugin
     private const string PluginId = "local.vivat.trainer";
     private TrainerMenu menu;
     private Harmony harmony;
+    private bool verboseLogging;
 
     public override void Load()
     {
+        verboseLogging = Config.Bind("Diagnostics", "VerboseLogging", false,
+            "Podrobne informacni vypisy traineru. Chyby a varovani zustavaji zapnute. Restart hry.").Value;
         menu = AddComponent<TrainerMenu>();
-        menu.Initialize(Log);
+        menu.Initialize(Log, verboseLogging);
         harmony = new Harmony(PluginId);
         PatchCameraInput(typeof(CharacterCameraLook), "Look");
         PatchCameraInput(typeof(CinemachineCarInput), "Update");
-        Log.LogInfo("Trainer připraven. Menu se otevírá klávesou F8.");
+        if (verboseLogging)
+            Log.LogInfo("Trainer připraven. Menu se otevírá klávesou F8.");
     }
 
     private void PatchCameraInput(Type type, string name)
@@ -42,7 +46,8 @@ public sealed class TrainerPlugin : BasePlugin
         {
             harmony.Patch(target, prefix: new HarmonyMethod(
                 AccessTools.DeclaredMethod(typeof(TrainerPlugin), nameof(AllowCameraLook))));
-            Log.LogInfo($"Zámek kamery: {type.Name}.{name}");
+            if (verboseLogging)
+                Log.LogInfo($"Zámek kamery: {type.Name}.{name}");
         }
         catch (Exception exception)
         {
@@ -69,6 +74,7 @@ public sealed class TrainerMenu : MonoBehaviour
     private enum Field { None, Money, X, Y, Z }
 
     private ManualLogSource log;
+    private bool verboseLogging;
     internal static bool IsOpen { get; private set; }
     private GameManager menuGame;
     private CursorLockMode oldLock;
@@ -84,7 +90,11 @@ public sealed class TrainerMenu : MonoBehaviour
     private static readonly float[] SummonDistances = { 7f, 11f };
     public TrainerMenu(IntPtr pointer) : base(pointer) { }
 
-    public void Initialize(ManualLogSource source) => log = source;
+    public void Initialize(ManualLogSource source, bool enableVerboseLogging)
+    {
+        log = source;
+        verboseLogging = enableVerboseLogging;
+    }
 
     private void Update()
     {
@@ -114,7 +124,8 @@ public sealed class TrainerMenu : MonoBehaviour
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
         IsOpen = true;
-        log?.LogInfo("Trainer otevřen.");
+        if (verboseLogging)
+            log?.LogInfo("Trainer otevřen.");
     }
 
     private void OnDisable() => Close();
@@ -378,7 +389,8 @@ public sealed class TrainerMenu : MonoBehaviour
     private void MoveSummonedCar(CarController car, Vector3 position, Quaternion rotation)
     {
         _ = car.Warp(position, rotation);
-        log?.LogInfo($"Přesun vlastního auta {car.name} na {position}.");
+        if (verboseLogging)
+            log?.LogInfo($"Přesun vlastního auta {car.name} na {position}.");
     }
 
     private static bool TryFindSummonSpot(
