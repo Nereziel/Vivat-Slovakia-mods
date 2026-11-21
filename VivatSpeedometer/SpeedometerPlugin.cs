@@ -14,6 +14,8 @@ public sealed class SpeedometerPlugin : BasePlugin
 
     public override void Load()
     {
+        bool verboseLogging = Config.Bind("Diagnostics", "VerboseLogging", false,
+            "Podrobne informacni vypisy tachometru. Chyby a varovani zustavaji zapnute. Restart hry.").Value;
         if (!Config.Bind("HUD", "Enabled", true, "Zobrazí tachometr při jízdě s kamerou zvenku.").Value)
             return;
 
@@ -21,7 +23,7 @@ public sealed class SpeedometerPlugin : BasePlugin
             "Odsazení tachometru od pravého okraje v pixelech.",
             new AcceptableValueRange<int>(0, 800))).Value;
         hud = AddComponent<SpeedometerHud>();
-        hud.Initialize(Log, margin);
+        hud.Initialize(Log, margin, verboseLogging);
     }
 
     public override bool Unload()
@@ -35,6 +37,7 @@ public sealed class SpeedometerPlugin : BasePlugin
 public sealed class SpeedometerHud : MonoBehaviour
 {
     private ManualLogSource log;
+    private bool verboseLogging;
     private int rightMargin;
     private GUIStyle speedometerStyle;
     private int displayedSpeed = -1;
@@ -43,9 +46,10 @@ public sealed class SpeedometerHud : MonoBehaviour
 
     public SpeedometerHud(IntPtr pointer) : base(pointer) { }
 
-    public void Initialize(ManualLogSource source, int margin)
+    public void Initialize(ManualLogSource source, int margin, bool enableVerboseLogging)
     {
         log = source;
+        verboseLogging = enableVerboseLogging;
         rightMargin = margin;
     }
 
@@ -103,7 +107,7 @@ public sealed class SpeedometerHud : MonoBehaviour
         var panel = new Rect(Mathf.Max(0, Screen.width - rightMargin - 130), Screen.height - 68, 130, 44);
         GUI.Box(panel, "");
         GUI.Label(panel, speedometerText, speedometerStyle);
-        if (!reportedSpeedometer)
+        if (verboseLogging && !reportedSpeedometer)
         {
             reportedSpeedometer = true;
             log?.LogInfo("Tachometr zobrazen.");
