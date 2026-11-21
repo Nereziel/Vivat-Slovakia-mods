@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace VivatRoadMarkingsFix;
 
-[BepInPlugin("local.vivat.roadmarkingsfix", "Vivat Road Markings Fix", "1.1.0")]
+[BepInPlugin("local.vivat.roadmarkingsfix", "Vivat Road Markings Fix", "1.0.0")]
 public sealed class RoadMarkingsPlugin : BasePlugin
 {
     private RoadMarkingsController controller;
@@ -32,14 +32,12 @@ public sealed class RoadMarkingsPlugin : BasePlugin
         float mipBias = Config.Bind("RoadMarkings", "MipBias", -1.5f,
             new ConfigDescription("Posun mipmap pro ostrejsi znacky. Nizsi hodnota = ostrejsi, ale mozne trpytani.",
                 new AcceptableValueRange<float>(-3f, 0f))).Value;
-        // New config key: old ScanIntervalSeconds=30 from existing cfg files must not
-        // silently keep a 30-second delay for newly streamed road textures.
-        float refreshInterval = Config.Bind("RoadMarkings", "RefreshIntervalSeconds", 2f,
-            new ConfigDescription("Kontrola nove nactenych textur (sekundy). Prvni kontrola probiha okamzite. Mensi interval muze zvysit CPU zatez.",
-                new AcceptableValueRange<float>(1f, 10f))).Value;
+        float scanInterval = Config.Bind("RoadMarkings", "ScanIntervalSeconds", 30f,
+            new ConfigDescription("Interval hledani nove nactenych textur v sekundach.",
+                new AcceptableValueRange<float>(10f, 120f))).Value;
 
         controller = AddComponent<RoadMarkingsController>();
-        controller.Initialize(Log, anisotropy, mipBias, refreshInterval, verboseLogging);
+        controller.Initialize(Log, anisotropy, mipBias, scanInterval, verboseLogging);
         if (verboseLogging)
             Log.LogInfo($"Road markings fix zapnuty (aniso={anisotropy}, mipBias={mipBias:F2}).");
     }
@@ -105,10 +103,7 @@ public sealed class RoadMarkingsController : MonoBehaviour
         targetAnisotropy = anisotropy;
         targetMipBias = mipBias;
         scanInterval = interval;
-        // Apply immediately, then repeat on the first Unity update to catch textures
-        // loaded after the plugin initializes. Subsequent checks use the short interval.
         nextScan = 0f;
-        ScanTextures();
     }
 
     private void Update()
@@ -117,11 +112,6 @@ public sealed class RoadMarkingsController : MonoBehaviour
             return;
 
         nextScan = Time.unscaledTime + scanInterval;
-        ScanTextures();
-    }
-
-    private void ScanTextures()
-    {
         try
         {
             ApplyToLoadedTextures();

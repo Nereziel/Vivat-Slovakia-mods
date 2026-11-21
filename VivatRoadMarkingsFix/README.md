@@ -6,7 +6,7 @@ Mod pro **Vivat Slovakia** (BepInEx 6 / Unity IL2CPP), který zlepšuje čitelno
 
 - Používá seznam konkrétních textur EasyRoads a hlavních silnic; ostatní textury nechává beze změny.
 - U textur s mipmapami nastaví trilineární filtrování, anisotropii a záporný mip bias.
-- Aplikuje opravu okamžitě při inicializaci a znovu při prvním snímku hry. Nově načtené textury pak kontroluje každé 2 s (nastavitelné). Žádný profiler, sběr frametimes ani klávesa F9.
+- Pravidelně kontroluje nově načtené textury (výchozí interval 30 s), bez profilování metod, sběru frametimes nebo klávesy F9.
 - Při odinstalaci za běhu obnoví původní hodnoty sledovaných textur.
 
 **Omezení:** Úprava zvýrazní již existující značení. Neopravuje chybějící geometrii, chybná UV, z-fighting ani nekvalitní zdrojové textury. Záporný mip bias může zvýšit třpytání nebo náročnost GPU.
@@ -27,11 +27,9 @@ Po prvním spuštění vznikne `BepInEx/config/local.vivat.roadmarkingsfix.cfg`:
 Enabled = true
 Anisotropy = 16
 MipBias = -1.5
-RefreshIntervalSeconds = 2
+ScanIntervalSeconds = 30
 ```
 
-Změny konfigurace se projeví po restartu hry. Pro mírnější výsledek nastav `MipBias = -0.75` nebo `0`. Pro menší zátěž CPU lze `RefreshIntervalSeconds` zvýšit až na 10 s.
-
-**Migrace:** Staré nastavení `ScanIntervalSeconds = 30` se už nepoužívá. Nová volba `RefreshIntervalSeconds = 2` se vytvoří automaticky také ve stávajícím konfiguračním souboru. Zápis původního klíče můžeš ručně smazat.
+Změny konfigurace se projeví po restartu hry. Pro mírnější výsledek nastav `MipBias = -0.75` nebo `0`.
 
 Projekt používá sdílené reference z kořenového `Directory.Build.props`.
