@@ -4,7 +4,7 @@ Samostatné mody pro **Vivat Slovakia** na Windows (BepInEx 6 / Unity IL2CPP). K
 
 ## Stažení jednotlivých modů
 
-Každý projekt má vlastní GitHub Release a vlastní ZIP. Verze se zveřejní automaticky po úspěšném sestavení na GitHub Actions. Odkazy na konkrétní vydání:
+Každý projekt má vlastní GitHub Release a vlastní ZIP. Verze se vydávají lokálně přes `build-and-release.cmd` (sestavení a nahrání přes GitHub CLI). Odkazy na konkrétní vydání:
 
 | Mod | Verze | Stažení / release | Funkce |
 | --- | --- | --- | --- |
@@ -18,7 +18,7 @@ Každý projekt má vlastní GitHub Release a vlastní ZIP. Verze se zveřejní 
 
 [Zobrazit všechna vydání](https://github.com/Nereziel/Vivat-Slovakia-mods/releases)
 
-> **Poznámka:** Tyto odkazy začnou fungovat, až proběhne první úspěšné GitHub Actions sestavení a zveřejnění. Automatické sestavení potřebuje soukromé IL2CPP reference z instalace hry – viz [CI.md](CI.md).
+> **Poznámka:** Odkazy začnou fungovat po prvním místním vydání. Release ZIP obsahuje pouze mody, ne herní DLL. Postup: [RELEASE.md](RELEASE.md).
 
 ## Instalace pro hráče
 
@@ -28,11 +28,11 @@ Ve zkratce: stáhni správný BepInEx 6 **Unity IL2CPP Windows x64**, rozbal do 
 
 **Při aktualizaci odstraň staré DLL.** Zvlášť při přechodu na Vivat Police smaž staré `VivatCombat.*.dll` verze 0.1.34 a starší. Vivat Combat 0.1.35 už vlastní policejní logiku neobsahuje.
 
-## Vývoj a automatická vydání
+## Vývoj a lokální vydávání
 
-- [CI.md](CI.md) – jednorázová příprava privátních referencí a automatických GitHub Releases
+- [RELEASE.md](RELEASE.md) – postup pro jediné lokální CMD sestavení a zveřejnění samostatných Releases
 - [build-and-install.cmd](build-and-install.cmd) – lokální sestavení všech projektů s knihovnami z nainstalované hry
-- [scripts/build-releases.sh](scripts/build-releases.sh) – build a příprava samostatných ZIP archivů v GitHub Actions
+- [build-and-release.cmd](build-and-release.cmd) – sestavení sedmi modů, vytvoření ZIPů a zveřejnění jednotlivých Releases z Windows
 - [LOGGING.md](LOGGING.md) – nastavení logování
 
-Každý projekt má vlastní `.csproj` a `BepInPlugin` verzi. Nové vydání vznikne při prvním úspěšném běhu Actions po změně verze daného pluginu; existující tag se nepřepisuje.
+Každý projekt má vlastní `.csproj` a `BepInPlugin` verzi. Nové vydání vznikne po spuštění `build-and-release.cmd` s aktualizovanou verzí pluginu. Existující tag se nepřepisuje.
