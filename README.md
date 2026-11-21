@@ -2,6 +2,12 @@
 
 Samostatné mody pro **Vivat Slovakia** na Windows (BepInEx 6 / Unity IL2CPP). Každý mod lze nainstalovat nezávisle; policejní systém již **není součástí Vivat Combat**.
 
+## Web projektu
+
+**[Vivat Slovakia Mods – přehled modifikací a návod na instalaci](https://nereziel.github.io/Vivat-Slovakia-mods/)**
+
+Na webu najdeš přehled dostupných pluginů, informace o jejich funkcích, odkazy ke stažení a postup instalace.
+
 ## Stažení jednotlivých modů
 
 **[Stáhnout mody – GitHub Releases](https://github.com/Nereziel/Vivat-Slovakia-mods/releases)**
