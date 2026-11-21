@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Reference Include="FMODUnity" HintPath="$(BepInExDir)/interop/FMODUnity.dll" Private="false" />
+    <Reference Include="Il2CppSystem.Core" HintPath="$(BepInExDir)/interop/Il2CppSystem.Core.dll" Private="false" />
+    <Reference Include="UnityEngine.AIModule" HintPath="$(BepInExDir)/interop/UnityEngine.AIModule.dll" Private="false" />
+    <Reference Include="UnityEngine.UIElementsModule" HintPath="$(BepInExDir)/interop/UnityEngine.UIElementsModule.dll" Private="false" />
+  </ItemGroup>
+</Project>

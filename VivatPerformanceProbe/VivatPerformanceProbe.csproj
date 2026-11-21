@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Reference Include="Unity.RenderPipelines.GPUDriven.Runtime" HintPath="$(BepInExDir)/interop/Unity.RenderPipelines.GPUDriven.Runtime.dll" Private="false" />
+  </ItemGroup>
+</Project>
