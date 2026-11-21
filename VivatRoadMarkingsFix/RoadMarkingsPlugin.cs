@@ -15,11 +15,14 @@ public sealed class RoadMarkingsPlugin : BasePlugin
 
     public override void Load()
     {
+        bool verboseLogging = Config.Bind("Diagnostics", "VerboseLogging", false,
+            "Podrobne vypisy o uprave textur. Chyby a varovani zustavaji zapnute. Restart hry.").Value;
         bool enabled = Config.Bind("RoadMarkings", "Enabled", true,
             "Doostri vybrane textury silnicniho znaceni. Zmena vyzaduje restart hry.").Value;
         if (!enabled)
         {
-            Log.LogInfo("Road markings fix je vypnuty konfiguraci.");
+            if (verboseLogging)
+                Log.LogInfo("Road markings fix je vypnuty konfiguraci.");
             return;
         }
 
@@ -34,8 +37,9 @@ public sealed class RoadMarkingsPlugin : BasePlugin
                 new AcceptableValueRange<float>(10f, 120f))).Value;
 
         controller = AddComponent<RoadMarkingsController>();
-        controller.Initialize(Log, anisotropy, mipBias, scanInterval);
-        Log.LogInfo($"Road markings fix zapnuty (aniso={anisotropy}, mipBias={mipBias:F2}).");
+        controller.Initialize(Log, anisotropy, mipBias, scanInterval, verboseLogging);
+        if (verboseLogging)
+            Log.LogInfo($"Road markings fix zapnuty (aniso={anisotropy}, mipBias={mipBias:F2}).");
     }
 
     public override bool Unload()
@@ -84,6 +88,7 @@ public sealed class RoadMarkingsController : MonoBehaviour
 
     private readonly Dictionary<int, OriginalSettings> originals = new();
     private ManualLogSource log;
+    private bool verboseLogging;
     private int targetAnisotropy;
     private float targetMipBias;
     private float scanInterval;
@@ -91,9 +96,10 @@ public sealed class RoadMarkingsController : MonoBehaviour
 
     public RoadMarkingsController(IntPtr pointer) : base(pointer) { }
 
-    internal void Initialize(ManualLogSource logger, int anisotropy, float mipBias, float interval)
+    internal void Initialize(ManualLogSource logger, int anisotropy, float mipBias, float interval, bool enableVerboseLogging)
     {
         log = logger;
+        verboseLogging = enableVerboseLogging;
         targetAnisotropy = anisotropy;
         targetMipBias = mipBias;
         scanInterval = interval;
@@ -157,7 +163,7 @@ public sealed class RoadMarkingsController : MonoBehaviour
                 texture.mipMapBias = targetMipBias;
         }
 
-        if (newlyAdjusted > 0)
+        if (verboseLogging && newlyAdjusted > 0)
             log?.LogDebug($"Road markings: upraveno {newlyAdjusted} novych textur, sledovano {originals.Count}.");
     }
 
