@@ -17,7 +17,7 @@ using Object = UnityEngine.Object;
 
 namespace VivatPopulationMod;
 
-[BepInPlugin("local.vivat.combat", "Vivat Combat", "0.1.31")]
+[BepInPlugin("local.vivat.combat", "Vivat Combat", "0.1.32")]
 public sealed class CombatPlugin : BasePlugin
 {
     private Harmony markers;
