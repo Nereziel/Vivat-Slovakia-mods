@@ -12,7 +12,7 @@ using Vivat.Systems.WantedSystem;
 
 namespace VivatPopulationMod;
 
-[BepInPlugin(PluginId, "Vivat Vehicle Fixes", "0.1.13")]
+[BepInPlugin(PluginId, "Vivat Vehicle Fixes", "0.1.14")]
 public sealed class VehiclePlugin : BasePlugin
 {
     private const string PluginId = "local.vivat.vehiclefixes";
