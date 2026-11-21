@@ -18,6 +18,7 @@ public sealed class PopulationPlugin : BasePlugin
     private static int pedestrianPercent;
     private static int reportedLimits;
     private static ManualLogSource patchLog;
+    private static bool verboseLogging;
     private Harmony harmony;
 
     public override void Load()
@@ -26,6 +27,8 @@ public sealed class PopulationPlugin : BasePlugin
         distantCarPercent = ReadPercent("DistantCars");
         pedestrianPercent = ReadPercent("Pedestrians");
         patchLog = Log;
+        verboseLogging = Config.Bind("Diagnostics", "VerboseLogging", false,
+            "Podrobne informacni vypisy limitu populace. Restart hry.").Value;
         reportedLimits = 0;
         harmony = new Harmony(PluginId);
         try
@@ -69,7 +72,8 @@ public sealed class PopulationPlugin : BasePlugin
 
         var postfix = AccessTools.DeclaredMethod(typeof(PopulationPlugin), callback);
         harmony!.Patch(getter, postfix: new HarmonyMethod(postfix));
-        Log.LogInfo($"Harmony: {manager.FullName}.{getter.Name} ({percent} %)");
+        if (verboseLogging)
+            Log.LogInfo($"Harmony: {manager.FullName}.{getter.Name} ({percent} %)");
     }
 
     private static void CarLimit(ref int __result) =>
@@ -88,7 +92,7 @@ public sealed class PopulationPlugin : BasePlugin
 
         int original = result;
         result = Math.Max(1, (int)((long)original * percent / 100));
-        if ((Volatile.Read(ref reportedLimits) & reportFlag) == 0 &&
+        if (verboseLogging && (Volatile.Read(ref reportedLimits) & reportFlag) == 0 &&
             (Interlocked.Or(ref reportedLimits, reportFlag) & reportFlag) == 0)
             patchLog?.LogInfo($"{name}: herni limit {original} -> {result}");
     }
