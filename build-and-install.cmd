@@ -45,7 +45,7 @@ for /d %%D in ("%~dp0*") do (
     )
 )
 
-if exist "%~dp0VivatCombat\VivatCombat.csproj" (
+if exist "%~dp0VivatPolice\VivatPolice.csproj" (
     for %%V in (charon fenrir) do (
         call :voices %%V
         if errorlevel 1 exit /b 1
@@ -79,7 +79,7 @@ echo Nainstalovano: "%DESTINATION%"
 exit /b 0
 
 :voices
-set "VOICE_SOURCE=%~dp0VivatCombat\PoliceVoiceSamples\Relay\%~1"
+set "VOICE_SOURCE=%~dp0VivatPolice\PoliceVoiceSamples\Relay\%~1"
 set "VOICE_DEST=%PLUGIN_DIR%\VivatPoliceVoices\%~1"
 if not exist "%VOICE_DEST%\" mkdir "%VOICE_DEST%"
 copy /y /b "%VOICE_SOURCE%\*.wav" "%VOICE_DEST%\" >nul
