@@ -1,18 +1,14 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
-using FMODUnity;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.AI;
-using UnityEngine.UIElements;
 using Vivat.Characters;
 using Vivat.Systems.WantedSystem;
-using Vivat.UI.Map;
 using Object = UnityEngine.Object;
 
 namespace VivatPopulationMod;
